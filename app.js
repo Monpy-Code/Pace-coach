@@ -2009,26 +2009,29 @@
         if (seq !== ocrSeq) return;
         parsed = mergeOcrResults(parsed, parseHealthCapture(res2.data, prep.height));
       }
-      if (!parsed.date && prep.top) {
-        // 날짜는 보통 상단에 작게 있어서, 숫자만 허용해 한 번 더 읽는다
-        draft.status = "날짜를 한 번 더 확인하는 중…";
+      if (prep.top) {
+        // 상단(날짜·큰 거리) 영역은 숫자만 허용해 한 번 더 읽는다
+        draft.status = "날짜와 거리를 한 번 더 확인하는 중…";
         render();
         await worker.setParameters({ tessedit_pageseg_mode: "6", tessedit_char_whitelist: "0123456789.:()-/" });
         var res3 = await worker.recognize(prep.top, {}, { text: true });
         await worker.setParameters({ tessedit_char_whitelist: "" });
         if (seq !== ocrSeq) return;
-        var dOnly = parseDateText(res3.data.text || "");
-        if (dOnly) {
-          parsed.date = dOnly;
-          parsed.missing = parsed.missing.filter(function (m) { return m !== "날짜"; });
+        var wlText = String(res3.data.text || "");
+        if (!parsed.date) {
+          var dOnly = parseDateText(wlText);
+          if (dOnly) {
+            parsed.date = dOnly;
+            parsed.missing = parsed.missing.filter(function (m) { return m !== "날짜"; });
+          }
         }
         // 상단의 큰 거리 숫자를 숫자 전용으로 한 번 더 읽어 보정
-        var wlText = String(res3.data.text || "");
         var wlDist = wlText.match(/(\d{1,3}[.,]\d{1,2})/);
         if (wlDist) {
           var wv = parseFloat(wlDist[1].replace(",", "."));
           if (wv > 0.2 && wv <= 200 && (!parsed.distanceKm || Math.abs(wv - parsed.distanceKm) <= 0.15)) {
             parsed.distanceKm = Math.round(wv * 100) / 100;
+            parsed.missing = parsed.missing.filter(function (m) { return m !== "거리"; });
           }
         }
       }
