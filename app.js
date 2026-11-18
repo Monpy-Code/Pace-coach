@@ -6,7 +6,7 @@
   "use strict";
 
   var LS_KEY = "pacecoach.v1";
-  var APP_VERSION = "1.1.0";
+  var APP_VERSION = "1.2.0";
   var DAY = 86400000;
 
   /* ------------------------------------------------------------------ *
@@ -858,7 +858,7 @@
       '<div class="grow">' +
       '<div class="row-between"><div class="km num">' + fmtKm(r.distanceKm) + ' km <span class="small dim" style="font-weight:500">' + fmtTime(r.durationSec) + " · " + fmtPace(pace) + "</span></div>" +
       '<span class="chip ' + cond[1] + '">' + cond[0] + "</span></div>" +
-      '<div class="meta">' + (r.avgHr ? "심박 " + r.avgHr + "bpm" : "") + (r.cadence ? " · " + r.cadence + "spm" : "") + (r.source === "sample" ? " · 샘플" : r.source === "ai" ? " · AI 추출" : "") + "</div>" +
+      '<div class="meta">' + (r.avgHr ? "심박 " + r.avgHr + "bpm" : "") + (r.cadence ? " · " + r.cadence + "spm" : "") + (r.source === "sample" ? " · 샘플" : r.source === "ai" ? " · AI 추출" : r.source === "ocr" ? " · OCR 인식" : "") + "</div>" +
       (r.memo ? '<div class="memo">' + esc(r.memo) + "</div>" : "") +
       diagChips(diag) +
       '<div class="coach">' + esc(coachNote(r, diag)) + "</div>" +
@@ -872,7 +872,7 @@
     var s = state.settings;
     var hasKey = !!s.apiKey && s.provider !== "none";
     var d = draft;
-    var html = '<h1>기록 추가</h1><p class="small dim" style="margin-bottom:14px">삼성헬스 캡처를 올리면 AI가 숫자를 읽어 채워줍니다.</p>';
+    var html = '<h1>기록 추가</h1><p class="small dim" style="margin-bottom:14px">삼성헬스 캡처를 올리면 숫자를 자동으로 읽어 채워줍니다.</p>';
 
     html += '<div class="card">';
     if (d.image) {
@@ -890,23 +890,27 @@
     }
 
     if (hasKey) {
-      html += '<p class="tiny" style="margin-top:10px">' + (s.provider === "claude" ? "Claude" : "OpenAI") + " Vision으로 날짜·거리·시간·페이스·심박·케이던스를 자동 추출합니다.</p>";
+      html += '<p class="tiny" style="margin-top:10px">' + (s.provider === "claude" ? "Claude" : "OpenAI") + " Vision으로 날짜·거리·시간·페이스·심박·케이던스를 자동 추출합니다. 키 호출이 실패하면 내장 무료 OCR로 자동 전환됩니다.</p>";
     } else {
-      html += '<div class="note" style="margin-top:10px"><b>API 키 없이 바로 입력할 수 있어요.</b><br>아래 폼에 숫자만 넣으면 페이스는 자동 계산되고, 저장 즉시 훈련 계획이 다시 짜입니다. 설정에서 키를 넣으면 캡처 자동 인식이 켜집니다.</div>' +
+      html += '<div class="note" style="margin-top:10px"><b>무료 OCR이 기본으로 켜져 있어요.</b><br>캡처를 고르면 브라우저 안에서 바로 숫자를 읽어 폼을 채웁니다(서버·API 키 불필요). 못 읽은 칸만 손으로 고치면 되고, 저장하면 계획이 다시 짜입니다.</div>' +
         '<button class="btn sm block" style="margin-top:10px" data-act="demoParse">샘플 삼성헬스 캡처로 인식 체험</button>';
     }
 
     if (d.busy) {
       html += '<div class="ai-box" style="margin-top:10px;display:flex;gap:9px;align-items:center"><span class="spinner"></span><span>' + esc(d.status || "캡처 분석 중…") + "</span></div>";
     } else if (d.error) {
-      html += '<div class="ai-box" style="margin-top:10px;border-color:rgba(255,107,107,.3);background:rgba(255,107,107,.07);color:#ffd0d0"><b>분석 실패</b> · ' + esc(d.error) + '<br><span class="tiny">키/모델을 확인하거나 아래 폼에 직접 입력하세요.</span></div>';
+      html += '<div class="ai-box" style="margin-top:10px;border-color:rgba(255,107,107,.3);background:rgba(255,107,107,.07);color:#ffd0d0"><b>인식 실패</b> · ' + esc(d.error) + '<br><span class="tiny">캡처를 다시 올리거나 아래 폼에 숫자를 직접 입력하세요.</span></div>';
     } else if (d.analysis) {
       var a = d.analysis;
-      html += '<div class="ai-box" style="margin-top:10px"><span class="lbl">' + (a.demo ? "샘플 체험 모드 · AI 키 없이 미리보기" : "AI 추출 완료") + "</span>" +
-        "날짜 <b>" + a.date + "</b> · 거리 <b>" + fmtKm(a.distanceKm) + "km</b> · 시간 <b>" + fmtTime(a.durationSec) + "</b> · 평균 페이스 <b>" +
-        fmtPace(a.durationSec / a.distanceKm) + "</b>" + (a.avgHr ? " · 심박 <b>" + a.avgHr + "bpm</b>" : "") + (a.cadence ? " · 케이던스 <b>" + a.cadence + "spm</b>" : "");
-      if (a.coach) html += '<br><span style="display:block;margin-top:6px">"' + esc(a.coach) + '"</span>';
-      html += "</div>";
+      if (a.ocr) {
+        html += ocrResultCard(a);
+      } else {
+        html += '<div class="ai-box" style="margin-top:10px"><span class="lbl">' + (a.demo ? "샘플 체험 모드 · AI 키 없이 미리보기" : "AI 추출 완료") + "</span>" +
+          "날짜 <b>" + a.date + "</b> · 거리 <b>" + fmtKm(a.distanceKm) + "km</b> · 시간 <b>" + fmtTime(a.durationSec) + "</b> · 평균 페이스 <b>" +
+          fmtPace(a.durationSec / a.distanceKm) + "</b>" + (a.avgHr ? " · 심박 <b>" + a.avgHr + "bpm</b>" : "") + (a.cadence ? " · 케이던스 <b>" + a.cadence + "spm</b>" : "");
+        if (a.coach) html += '<br><span style="display:block;margin-top:6px">"' + esc(a.coach) + '"</span>';
+        html += "</div>";
+      }
     }
     html += "</div>";
 
@@ -1079,6 +1083,7 @@
     /* AI 연결 */
     html += '<div class="sec-title"><h2>AI 코치 연동</h2><span class="more">' + (s.apiKey && s.provider !== "none" ? "연결됨" : "선택 사항") + "</span></div>";
     html += '<div class="card"><div class="form">' +
+      '<div class="note" style="margin-bottom:4px"><b>캡처 자동 인식은 기본이 무료예요.</b><br>키 없이도 브라우저 내장 OCR(Tesseract.js)이 삼성헬스 캡처의 숫자를 읽어 폼을 채웁니다. 키를 넣으면 Vision이 더 꼼꼼히 읽고 코칭 문장까지 만들어 줍니다(선택).</div>' +
       '<div class="field"><label>제공사</label><div class="pill-toggle">' +
       ['none', 'claude', 'openai'].map(function (p) {
         var lbl = p === "none" ? "사용 안 함" : p === "claude" ? "Claude" : "OpenAI";
@@ -1171,6 +1176,11 @@
         break;
       case "demoParse":
         runDemoParse();
+        break;
+      case "retryOcr":
+        var ss = state.settings;
+        if (draft.image && ss.apiKey && ss.provider !== "none") analyzeImage(draft.image, "image/png");
+        else runFreeOcr();
         break;
       case "cond":
         draft.condition = arg;
@@ -1278,6 +1288,7 @@
     draft.image = null;
     draft.analysis = null;
     draft.error = "";
+    draft.ocrFallback = false;
     draft.imageName = file.name || "capture.png";
     fileToDataURL(file).then(function (dataUrl) {
       draft.image = dataUrl;
@@ -1285,9 +1296,10 @@
       render();
       var s = state.settings;
       if (s.apiKey && s.provider !== "none") {
+        // 키가 있으면 Vision, 실패하면 아래 analyzeImage가 무료 OCR로 넘긴다
         analyzeImage(dataUrl, file.type || "image/png");
       } else {
-        toast("캡처를 불러왔어요. API 키가 없어 숫자는 직접 입력해 주세요.");
+        runFreeOcr();
       }
     }).catch(function () {
       draft.error = "이미지를 읽지 못했어요.";
@@ -1373,6 +1385,12 @@
       }
       draft.error = msg;
       render();
+      // 키 호출이 막혔을 때(키 오류·CORS·한도)는 무료 OCR로 한 번 더 시도한다
+      if (draft.image && !draft.ocrFallback) {
+        draft.ocrFallback = true;
+        toast("Vision 호출이 실패해 내장 무료 OCR로 다시 읽어볼게요.");
+        runFreeOcr();
+      }
     }
   }
 
@@ -1402,6 +1420,591 @@
     if (dur) draft.time = fmtTime(dur);
     if (a.avgHr) draft.hr = String(Math.round(a.avgHr));
     if (a.cadence) draft.cadence = String(Math.round(a.cadence));
+  }
+
+  /* ------------------------------------------------------------------ *
+   *  무료 내장 OCR (Tesseract.js) · 삼성헬스 캡처 파서
+   *  - API 키 없이 브라우저 안에서만 동작합니다.
+   *  - 숫자·단위(km, bpm, spm, kcal, mm:ss, m'ss")를 읽어 폼을 채웁니다.
+   * ------------------------------------------------------------------ */
+  var TESS_VERSION = "5";
+  var TESS_SRC = "https://cdn.jsdelivr.net/npm/tesseract.js@" + TESS_VERSION + "/dist/tesseract.min.js";
+  var TESS_DIST = "https://cdn.jsdelivr.net/npm/tesseract.js@" + TESS_VERSION + "/dist/";
+  var TESS_CORE = "https://cdn.jsdelivr.net/npm/tesseract.js-core@" + TESS_VERSION;
+  var ocrWorkerPromise = null;
+  var ocrProgressCb = null;
+  var ocrSeq = 0;
+
+  function loadScriptOnce(src) {
+    return new Promise(function (resolve, reject) {
+      if (window.Tesseract) return resolve();
+      var old = document.querySelector('script[data-ocr-src="' + src + '"]');
+      if (old) {
+        old.addEventListener("load", function () { resolve(); });
+        old.addEventListener("error", function () { reject(new Error("OCR 엔진을 내려받지 못했어요. 네트워크를 확인해 주세요.")); });
+        return;
+      }
+      var sc = document.createElement("script");
+      sc.src = src;
+      sc.async = true;
+      sc.setAttribute("data-ocr-src", src);
+      sc.onload = function () { resolve(); };
+      sc.onerror = function () {
+        if (sc.parentNode) sc.parentNode.removeChild(sc);
+        reject(new Error("OCR 엔진을 내려받지 못했어요. 네트워크를 확인해 주세요."));
+      };
+      document.head.appendChild(sc);
+    });
+  }
+
+  function getOcrWorker() {
+    if (ocrWorkerPromise) return ocrWorkerPromise;
+    ocrWorkerPromise = loadScriptOnce(TESS_SRC).then(function () {
+      if (!window.Tesseract || !window.Tesseract.createWorker) throw new Error("OCR 엔진을 초기화하지 못했어요.");
+      return window.Tesseract.createWorker("eng", 1, {
+        workerPath: TESS_DIST + "worker.min.js",
+        corePath: TESS_CORE,
+        logger: function (m) { if (typeof ocrProgressCb === "function") ocrProgressCb(m); },
+        errorHandler: function (e) { if (window.console) console.warn("[OCR]", e && e.message ? e.message : e); }
+      });
+    }).then(function (worker) {
+      return worker.setParameters({ preserve_interword_spaces: "1", user_defined_dpi: "300" }).then(function () { return worker; });
+    });
+    ocrWorkerPromise.catch(function () { ocrWorkerPromise = null; });
+    return ocrWorkerPromise;
+  }
+
+  function ocrStatusLabel(m) {
+    var st = (m && m.status) || "";
+    if (st === "loading tesseract core" || st === "loading tesseract.js core") return "OCR 엔진 준비 중…";
+    if (st === "initializing tesseract" || st === "initializing tesseract.js") return "OCR 엔진 초기화 중…";
+    if (st === "loading language traineddata") return "글자 인식 데이터 내려받는 중… (첫 1회만)";
+    if (st === "initializing api") return "인식기 초기화 중…";
+    if (st === "recognizing text") return "삼성헬스 화면에서 숫자 읽는 중… " + Math.round((m.progress || 0) * 100) + "%";
+    return "삼성헬스 화면에서 숫자 읽는 중…";
+  }
+
+  /* --- 이미지 전처리: 2~4배 업스케일 · 흑백 · 대비 강조 · 다크 화면 반전 --- */
+  function preprocessCapture(dataUrl) {
+    return new Promise(function (resolve, reject) {
+      var img = new Image();
+      img.onload = function () {
+        try { resolve(buildOcrCanvases(img)); } catch (e) { reject(e); }
+      };
+      img.onerror = function () { reject(new Error("이미지를 열지 못했어요.")); };
+      img.src = dataUrl;
+    });
+  }
+
+  function histQuantile(hist, total, q) {
+    var target = total * q, acc = 0;
+    for (var i = 0; i < 256; i++) {
+      acc += hist[i];
+      if (acc >= target) return i;
+    }
+    return 255;
+  }
+
+  function otsuThreshold(hist, total) {
+    var sum = 0, i;
+    for (i = 0; i < 256; i++) sum += i * hist[i];
+    var sumB = 0, wB = 0, best = -1, thr = 128;
+    for (i = 0; i < 256; i++) {
+      wB += hist[i];
+      if (!wB) continue;
+      var wF = total - wB;
+      if (!wF) break;
+      sumB += i * hist[i];
+      var mB = sumB / wB, mF = (sum - sumB) / wF;
+      var between = wB * wF * (mB - mF) * (mB - mF);
+      if (between > best) { best = between; thr = i; }
+    }
+    return thr;
+  }
+
+  function buildOcrCanvases(img) {
+    var w = img.naturalWidth || img.width || 1;
+    var h = img.naturalHeight || img.height || 1;
+    var longSide = Math.max(w, h);
+    // 작은 캡처는 크게 키우고(최대 4배), 이미 큰 캡처는 그대로 둔다(긴 변 1800px 기준)
+    var scale = Math.max(1, Math.min(4, 1800 / longSide));
+    var cw = Math.max(1, Math.round(w * scale));
+    var ch = Math.max(1, Math.round(h * scale));
+    var cv = document.createElement("canvas");
+    cv.width = cw; cv.height = ch;
+    var ctx = cv.getContext("2d");
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(img, 0, 0, cw, ch);
+    var src = ctx.getImageData(0, 0, cw, ch);
+    var px = src.data;
+    var n = cw * ch;
+    var gray = new Uint8ClampedArray(n);
+    var sum = 0, i, j;
+    for (i = 0, j = 0; j < n; i += 4, j++) {
+      var g = (px[i] * 299 + px[i + 1] * 587 + px[i + 2] * 114) / 1000;
+      gray[j] = g;
+      sum += g;
+    }
+    var mean = sum / n;
+    var inverted = mean < 112;            // 다크 모드 캡처는 흑백 반전
+    var histIn = new Uint32Array(256);
+    for (j = 0; j < n; j++) {
+      if (inverted) gray[j] = 255 - gray[j];
+      histIn[Math.round(gray[j])]++;
+    }
+    var lo = histQuantile(histIn, n, 0.02), hi = histQuantile(histIn, n, 0.98);
+    if (hi - lo < 45) { lo = 0; hi = 255; }
+    var span = hi - lo || 1;
+    var histOut = new Uint32Array(256);
+    for (j = 0; j < n; j++) {
+      var v = (gray[j] - lo) * 255 / span;
+      v = v < 0 ? 0 : v > 255 ? 255 : v;
+      gray[j] = v;
+      histOut[Math.round(v)]++;
+    }
+
+    var out = document.createElement("canvas");
+    out.width = cw; out.height = ch;
+    var octx = out.getContext("2d");
+    var grayData = octx.createImageData(cw, ch);
+    for (j = 0; j < n; j++) {
+      var gv = gray[j];
+      grayData.data[j * 4] = gv;
+      grayData.data[j * 4 + 1] = gv;
+      grayData.data[j * 4 + 2] = gv;
+      grayData.data[j * 4 + 3] = 255;
+    }
+    octx.putImageData(grayData, 0, 0);
+    var grayUrl = out.toDataURL("image/png");
+
+    var thr = otsuThreshold(histOut, n);
+    for (j = 0; j < n; j++) {
+      var bv = gray[j] <= thr ? 0 : 255;
+      grayData.data[j * 4] = bv;
+      grayData.data[j * 4 + 1] = bv;
+      grayData.data[j * 4 + 2] = bv;
+      grayData.data[j * 4 + 3] = 255;
+    }
+    octx.putImageData(grayData, 0, 0);
+    var binUrl = out.toDataURL("image/png");
+
+    return { gray: grayUrl, binary: binUrl, width: cw, height: ch, scale: scale, inverted: inverted };
+  }
+
+  /* --- OCR 결과 → 토큰(단어) --- */
+  function normOcrText(s) {
+    var t = String(s == null ? "" : s);
+    t = t.replace(/[\u2018\u2019\u00b4`\u2032]/g, "'").replace(/[\u201c\u201d\u2033]/g, '"');
+    t = t.replace(/\s+/g, " ").trim();
+    // 숫자와 헷갈리기 쉬운 글자만 보정 (O→0, l/I→1, S→5, B→8, Z→2)
+    if (/\d/.test(t) && /^[0-9OoIlSsBbZzGg.,:'"]+$/.test(t)) {
+      t = t.replace(/[Oo]/g, "0").replace(/[Il]/g, "1").replace(/[Ss]/g, "5").replace(/[Bb]/g, "8").replace(/[Zz]/g, "2").replace(/G/g, "6");
+    }
+    return t;
+  }
+
+  function collectOcrChunks(data) {
+    var chunks = [];
+    function add(w, lineText) {
+      if (!w || !w.text) return;
+      var t = normOcrText(w.text);
+      if (!t) return;
+      var bb = w.bbox || {};
+      var x0 = bb.x0 || 0, y0 = bb.y0 || 0, x1 = bb.x1 || 0, y1 = bb.y1 || 0;
+      chunks.push({
+        text: t,
+        raw: w.text,
+        conf: typeof w.confidence === "number" ? w.confidence : 0,
+        x0: x0, y0: y0, x1: x1, y1: y1,
+        h: Math.max(1, y1 - y0),
+        cy: (y0 + y1) / 2,
+        lineText: lineText || ""
+      });
+    }
+    if (data.words && data.words.length) {
+      data.words.forEach(function (w) { add(w, ""); });
+    } else if (data.blocks) {
+      data.blocks.forEach(function (b) {
+        (b.paragraphs || []).forEach(function (p) {
+          (p.lines || []).forEach(function (l) {
+            (l.words || []).forEach(function (w) { add(w, l.text || ""); });
+          });
+        });
+      });
+    }
+    if (!chunks.length && data.lines) {
+      data.lines.forEach(function (l) {
+        (l.words || []).forEach(function (w) { add(w, l.text || ""); });
+        if (!(l.words && l.words.length) && l.text) {
+          // 단어 상자가 없으면 줄 전체를 하나의 덩어리로
+          add({ text: l.text, confidence: l.confidence, bbox: l.bbox }, l.text);
+        }
+      });
+    }
+    if (!chunks.length && data.text) {
+      // 최후 수단: 글자만 있을 때 줄·토큰에 가짜 좌표를 부여
+      var y = 0;
+      String(data.text).split(/\r?\n/).forEach(function (ln) {
+        y += 10;
+        var x = 0;
+        ln.trim().split(/\s+/).forEach(function (w) {
+          var t = normOcrText(w);
+          if (!t) return;
+          var wd = Math.max(8, t.length * 8);
+          chunks.push({ text: t, raw: w, conf: 0, x0: x, y0: y, x1: x + wd, y1: y + 10, h: 10, cy: y + 5, lineText: ln, fallback: true });
+          x += wd + 8;
+        });
+      });
+    }
+    return chunks;
+  }
+
+  function groupOcrLines(chunks) {
+    var sorted = chunks.slice().sort(function (a, b) { return a.cy - b.cy; });
+    var id = 0, refCy = null, refH = 1;
+    sorted.forEach(function (c) {
+      if (refCy == null || Math.abs(c.cy - refCy) > Math.max(9, Math.min(c.h, refH) * 0.75)) {
+        id++;
+        refCy = c.cy;
+        refH = c.h;
+      } else {
+        refCy = (refCy + c.cy) / 2;
+        refH = Math.max(refH, c.h);
+      }
+      c.lineId = id;
+    });
+    return chunks;
+  }
+
+  function unitHit(text, kind) {
+    var t = String(text == null ? "" : text).toLowerCase().replace(/[\s.,|]/g, "");
+    if (!t) return false;
+    if (kind === "km") return /(km|krn|knm|knn)/.test(t);
+    if (kind === "bpm") return /(bpm|bpnn|bprn|bom|dpm)/.test(t);
+    if (kind === "spm") return /(spm|5pm|spn|spni|sprn)/.test(t);
+    if (kind === "kcal") return /(kcal|kca1|kal)/.test(t);
+    if (kind === "slashkm") return /(\/km|\/krn|perkm|1km\/)/.test(t);
+    return false;
+  }
+
+  /* 페이스/시간 등 뒤에 붙은 단위를 같은 줄에서 찾기 */
+  function unitNearby(c, kind) {
+    if (unitHit(c.text, kind)) return true;
+    var limit = Math.max(14, c.h * 2.4);
+    for (var i = 0; i < c._all.length; i++) {
+      var o = c._all[i];
+      if (o === c || o.lineId !== c.lineId) continue;
+      var gap = o.x0 - c.x1;
+      if (gap < -8 || gap > limit) continue;
+      if (unitHit(o.text, kind)) return true;
+    }
+    return false;
+  }
+
+  var OCR_PACE_RE = /^(\d{1,2})\s*['\u2032]\s*(\d{1,2})/;
+  var OCR_TIME_RE = /^(\d{1,2})\s*[:;]\s*(\d{1,2})(?:\s*[:;]\s*(\d{1,2}))?$/;
+
+  function parseHealthCapture(data, imgHeight) {
+    var chunks = groupOcrLines(collectOcrChunks(data));
+    chunks.forEach(function (c) { c._all = chunks; });
+    var H = chunks.length && chunks[0].fallback ? 0 : (imgHeight || 0);
+    var p = {
+      date: null,
+      distanceKm: null,
+      durationSec: null,
+      avgPaceSec: null,
+      avgHr: null,
+      cadence: null,
+      kcal: null,
+      confidence: Math.round(typeof data.confidence === "number" ? data.confidence : 0),
+      missing: [],
+      text: String(data.text || "").slice(0, 600)
+    };
+
+    /* 1) 거리: 큰 숫자 + km (페이스의 /km는 제외) */
+    var distBest = null;
+    chunks.forEach(function (c) {
+      var m = c.text.match(/^(\d{1,3}[.,]\d{1,2}|\d{1,3})\s*(.*)$/);
+      if (!m) return;
+      var rest = m[2] || "";
+      var inline = unitHit(rest, "km") && !unitHit(rest, "slashkm");
+      var slash = unitHit(rest, "slashkm") || unitHit(rest, "kcal");
+      if (slash) return;
+      if (!inline && !(unitNearby(c, "km") && !unitNearby(c, "slashkm"))) return;
+      var v = parseFloat(m[1].replace(",", "."));
+      if (!(v > 0.2 && v <= 200)) return;
+      var score = c.h * (inline ? 1.25 : 1) * (0.55 + Math.min(1, c.conf / 100));
+      if (!distBest || score > distBest.score) distBest = { v: v, score: score, c: c };
+    });
+    if (distBest) p.distanceKm = Math.round(distBest.v * 100) / 100;
+
+    /* 2) 시간/페이스 후보 수집 */
+    var timeCands = [];
+    chunks.forEach(function (c) {
+      var t = c.text;
+      var pm = t.match(OCR_PACE_RE);
+      var tm = t.match(OCR_TIME_RE);
+      var sec = null, isPace = false;
+      if (pm) {
+        var mm = parseInt(pm[1], 10), ss = parseInt(pm[2], 10);
+        if (mm >= 2 && mm <= 20 && ss < 60) { sec = mm * 60 + ss; isPace = true; }
+      }
+      if (sec == null && tm) {
+        var a = parseInt(tm[1], 10), b = parseInt(tm[2], 10), cc = tm[3] != null ? parseInt(tm[3], 10) : null;
+        if (b < 60 && (cc == null || cc < 60)) {
+          var s2 = cc != null ? a * 3600 + b * 60 + cc : a * 60 + b;
+          if (s2 >= 45 && s2 <= 35999) sec = s2;
+        }
+      }
+      if (sec == null) return;
+      var lineTxt = (c.lineText || "") + " " + chunks.filter(function (o) { return o.lineId === c.lineId; }).map(function (o) { return o.text; }).join(" ");
+      if (!isPace) {
+        if (/20\d{2}/.test(lineTxt)) return;                 // 날짜 줄의 시각(예: 9:36)
+        if (H && c.cy < H * 0.05 && c.h < H * 0.022) return;  // 상태바 시계
+      }
+      timeCands.push({ sec: sec, pace: isPace, h: c.h, conf: c.conf, x0: c.x0, c: c });
+    });
+
+    var paceCand = timeCands.filter(function (x) { return x.pace; }).sort(function (a, b) {
+      return (b.h - a.h) || (b.conf - a.conf);
+    })[0] || null;
+    var durCands = timeCands.filter(function (x) { return !x.pace; });
+    var duration = null;
+
+    if (durCands.length === 1) {
+      duration = durCands[0];
+    } else if (durCands.length > 1) {
+      var pick = null;
+      if (distBest && paceCand) {
+        // 거리×페이스와 가장 가까운 시간을 고른다
+        var target = distBest.v * paceCand.sec;
+        durCands.forEach(function (d) {
+          var err = Math.abs(d.sec - target) / target;
+          if (!pick || err < pick.err) pick = { d: d, err: err };
+        });
+        if (pick && pick.err > 0.12) pick = null;
+      }
+      if (!pick && distBest) {
+        // 페이스 글자가 안 읽혔을 때: 두 시간값의 조합이 거리와 맞는지 확인
+        var bestPair = null;
+        durCands.forEach(function (d) {
+          durCands.forEach(function (o) {
+            if (o === d) return;
+            var implied = d.sec / distBest.v;
+            var err = Math.abs(implied - o.sec) / Math.max(1, o.sec);
+            if (!bestPair || err < bestPair.err) bestPair = { d: d, o: o, err: err };
+          });
+        });
+        if (bestPair && bestPair.err < 0.05) {
+          pick = { d: bestPair.d.sec >= bestPair.o.sec ? bestPair.d : bestPair.o, err: bestPair.err };
+          if (!paceCand) paceCand = bestPair.d.sec >= bestPair.o.sec ? bestPair.o : bestPair.d;
+        }
+      }
+      if (!pick) {
+        // 글자 높이(폰트 크기)가 가장 큰 값 → 화면의 큰 숫자
+        var sorted = durCands.slice().sort(function (a, b) { return (b.h - a.h) || (b.sec - a.sec); });
+        pick = { d: sorted[0] };
+      }
+      duration = pick.d;
+    }
+
+    if (duration) p.durationSec = duration.sec;
+    if (paceCand) p.avgPaceSec = paceCand.sec;
+
+    /* 3) 서로 계산해서 빈칸 메우기 */
+    if (!p.durationSec && p.distanceKm && p.avgPaceSec) p.durationSec = Math.round(p.distanceKm * p.avgPaceSec);
+    if (!p.avgPaceSec && p.distanceKm && p.durationSec) p.avgPaceSec = Math.round(p.durationSec / p.distanceKm);
+    if (!p.distanceKm && p.durationSec && p.avgPaceSec) {
+      var dv = p.durationSec / p.avgPaceSec;
+      if (dv > 0.2 && dv < 100) p.distanceKm = Math.round(dv * 100) / 100;
+    }
+
+    /* 4) 심박·케던스: 숫자 옆의 단위(bpm/spm)로 구분 */
+    function pickUnitNumber(kind, min, max, forbid) {
+      var best = null;
+      chunks.forEach(function (c) {
+        var m = c.text.match(/^(\d{2,3})\s*([a-z]{1,5})?$/i);
+        if (!m) return;
+        var v = parseInt(m[1], 10);
+        if (v < min || v > max) return;
+        if (forbid && (unitHit(c.text, forbid) || unitNearby(c, forbid))) return;
+        var inline = m[2] ? unitHit(m[2], kind) : false;
+        if (!inline && !unitNearby(c, kind)) return;
+        var score = (inline ? 3 : 2) + Math.min(1, c.conf / 100) + c.h / 500;
+        if (!best || score > best.score) best = { v: v, score: score };
+      });
+      return best ? best.v : null;
+    }
+    p.avgHr = pickUnitNumber("bpm", 55, 215, "spm");
+    p.cadence = pickUnitNumber("spm", 110, 225, "bpm");
+
+    var kcalBest = null;
+    chunks.forEach(function (c) {
+      var m = c.text.match(/^(\d{2,4})\s*([a-z]{1,5})?$/i);
+      if (!m || !(m[2] && unitHit(m[2], "kcal"))) return;
+      var v = parseInt(m[1], 10);
+      if (v >= 30 && v <= 5000) kcalBest = v;
+    });
+    p.kcal = kcalBest;
+
+    /* 5) 날짜: 2026. 11. 18. / 2026년 11월 18일 / 2026 11 18 */
+    var allText = chunks.map(function (c) { return c.text; }).join(" ") + " " + String(data.text || "").replace(/\s+/g, " ");
+    var dm = allText.match(/(20\d{2})\s*[.\-/년]?\s*(\d{1,2})\s*[.\-/월]?\s*(\d{1,2})/);
+    if (!dm) dm = allText.match(/(20\d{2})\s+(\d{1,2})\s+(\d{1,2})/);
+    var y = null, mo = null, dy = null;
+    if (dm) { y = parseInt(dm[1], 10); mo = parseInt(dm[2], 10); dy = parseInt(dm[3], 10); }
+    if (!y) {
+      var md = allText.match(/(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
+      if (!md) md = allText.match(/(\d{1,2})\s*[.\/]\s*(\d{1,2})\s*\./);
+      if (md) { mo = parseInt(md[1], 10); dy = parseInt(md[2], 10); y = new Date().getFullYear(); }
+    }
+    if (y && mo >= 1 && mo <= 12 && dy >= 1 && dy <= 31) {
+      var isoStr = y + "-" + pad(mo) + "-" + pad(dy);
+      if (daysBetween(todayISO(), isoStr) <= 0) p.date = isoStr;
+    }
+
+    /* 6) 못 읽은 칸 정리 */
+    if (!p.date) p.missing.push("날짜");
+    if (!p.distanceKm) p.missing.push("거리");
+    if (!p.durationSec) p.missing.push("시간");
+    if (!p.avgHr) p.missing.push("심박");
+    if (!p.cadence) p.missing.push("케이던스");
+
+    return p;
+  }
+
+  function mergeOcrResults(a, b) {
+    var out = a;
+    ["date", "distanceKm", "durationSec", "avgPaceSec", "avgHr", "cadence", "kcal"].forEach(function (k) {
+      if ((out[k] == null || out[k] === undefined) && b[k] != null) out[k] = b[k];
+    });
+    if (b.confidence > out.confidence) out.confidence = b.confidence;
+    out.missing = [];
+    if (!out.date) out.missing.push("날짜");
+    if (!out.distanceKm) out.missing.push("거리");
+    if (!out.durationSec) out.missing.push("시간");
+    if (!out.avgHr) out.missing.push("심박");
+    if (!out.cadence) out.missing.push("케이던스");
+    if (!out.text && b.text) out.text = b.text;
+    return out;
+  }
+
+  function ocrNeedsSecondPass(p) {
+    return !p.distanceKm || !p.durationSec || !p.avgHr || !p.cadence;
+  }
+
+  function ocrResultCard(a) {
+    var conf = a.confidence || 0;
+    var confTxt = conf >= 80 ? "높음" : conf >= 55 ? "보통" : "낮음";
+    var bits = [
+      "날짜 <b>" + (a.date || "—") + "</b>",
+      "거리 <b>" + (a.distanceKm ? fmtKm(a.distanceKm) + "km" : "—") + "</b>",
+      "시간 <b>" + (a.durationSec ? fmtTime(a.durationSec) : "—") + "</b>",
+      "페이스 <b>" + (a.distanceKm && a.durationSec ? fmtPace(a.durationSec / a.distanceKm) : "—") + "</b>"
+    ];
+    if (a.avgHr) bits.push("심박 <b>" + a.avgHr + "bpm</b>");
+    if (a.cadence) bits.push("케이던스 <b>" + a.cadence + "spm</b>");
+    if (a.kcal) bits.push('<span class="tiny">' + a.kcal + " kcal</span>");
+    var html = '<div class="ai-box" style="margin-top:10px"><span class="lbl">무료 OCR 인식 완료 · 정확도 ' + confTxt + " (" + conf + "%)" + (a.inverted ? " · 다크 화면 보정" : "") + "</span>" + bits.join(" · ");
+    if (a.coach) html += '<span style="display:block;margin-top:7px">"' + esc(a.coach) + '"</span>';
+    if (a.missing && a.missing.length) {
+      html += '<p class="tiny" style="margin-top:8px">못 읽은 칸: <b>' + a.missing.join(", ") + "</b> — 폼에서 직접 채워 주세요.</p>";
+    }
+    html += '<div class="btn-row" style="margin-top:10px"><button class="btn sm" data-act="retryOcr">📸 캡처 다시 읽기</button>' +
+      '<button class="btn sm primary" data-act="saveRun">이 내용으로 바로 저장</button></div>';
+    html += "</div>";
+    return html;
+  }
+
+  /* --- 무료 OCR 실행 --- */
+  async function runFreeOcr() {
+    if (!draft.image) return toast("먼저 삼성헬스 캡처를 선택해 주세요.");
+    var seq = ++ocrSeq;
+    draft.busy = true;
+    draft.error = "";
+    draft.analysis = null;
+    draft.status = "삼성헬스 화면에서 숫자 읽는 중…";
+    render();
+    var lastPaint = 0;
+    ocrProgressCb = function (m) {
+      if (seq !== ocrSeq) return;
+      var label = ocrStatusLabel(m);
+      if (label !== draft.status) draft.status = label;
+      var now = Date.now();
+      if (now - lastPaint > 150) { lastPaint = now; render(); }
+    };
+    try {
+      var prep = await preprocessCapture(draft.image);
+      if (seq !== ocrSeq) return;
+      var worker = await getOcrWorker();
+      if (seq !== ocrSeq) return;
+      await worker.setParameters({ tessedit_pageseg_mode: "6", preserve_interword_spaces: "1", user_defined_dpi: "300" });
+      var res = await worker.recognize(prep.gray, {}, { text: true, blocks: true });
+      if (seq !== ocrSeq) return;
+      var parsed = parseHealthCapture(res.data, prep.height);
+      if (ocrNeedsSecondPass(parsed)) {
+        draft.status = "흑백으로 한 번 더 확인하는 중…";
+        render();
+        await worker.setParameters({ tessedit_pageseg_mode: "11" });
+        var res2 = await worker.recognize(prep.binary, {}, { text: true, blocks: true });
+        if (seq !== ocrSeq) return;
+        parsed = mergeOcrResults(parsed, parseHealthCapture(res2.data, prep.height));
+      }
+      ocrProgressCb = null;
+      finishOcr(parsed, prep);
+    } catch (err) {
+      if (seq !== ocrSeq) return;
+      ocrProgressCb = null;
+      draft.busy = false;
+      draft.status = "";
+      var msg = (err && err.message) || String(err);
+      draft.error = msg + " — 폼에 숫자를 직접 넣어도 페이스는 자동 계산돼요.";
+      render();
+    }
+  }
+
+  function finishOcr(p, prep) {
+    draft.busy = false;
+    draft.status = "";
+    draft.error = "";
+    if (p.date) draft.date = p.date;
+    if (p.distanceKm) draft.km = String(Math.round(p.distanceKm * 100) / 100);
+    if (p.durationSec) draft.time = fmtTime(p.durationSec);
+    if (p.avgHr) draft.hr = String(Math.round(p.avgHr));
+    if (p.cadence) draft.cadence = String(Math.round(p.cadence));
+
+    var run = { date: draft.date, distanceKm: p.distanceKm, durationSec: p.durationSec, avgHr: p.avgHr, cadence: p.cadence, condition: draft.condition };
+    var coach = "";
+    try { if (run.distanceKm && run.durationSec) coach = coachNote(run); } catch (e) { coach = ""; }
+
+    draft.analysis = {
+      ocr: true,
+      date: p.date,
+      distanceKm: p.distanceKm,
+      durationSec: p.durationSec,
+      avgPaceSec: p.avgPaceSec,
+      avgHr: p.avgHr,
+      cadence: p.cadence,
+      kcal: p.kcal,
+      confidence: p.confidence,
+      coach: coach,
+      missing: p.missing,
+      inverted: prep ? prep.inverted : false,
+      text: p.text
+    };
+    render();
+    var got = [];
+    if (p.distanceKm) got.push("거리");
+    if (p.durationSec) got.push("시간");
+    if (p.avgHr) got.push("심박");
+    if (p.cadence) got.push("케이던스");
+    if (p.date) got.push("날짜");
+    if (got.length >= 2) {
+      toast("캡처에서 <b>" + got.join("·") + "</b>를 읽었어요." + (p.missing.length ? " 못 읽은 칸은 손으로 채워 주세요." : ""));
+    } else {
+      toast("숫자를 거의 읽지 못했어요. 캡처를 다시 올리거나 폼에 직접 입력해 주세요.");
+    }
   }
 
   /* 샘플 캡처 인식 체험 (API 키 불필요) */
@@ -1461,7 +2064,7 @@
       cadence: draft.cadence ? parseInt(draft.cadence, 10) : null,
       condition: draft.condition || "good",
       memo: draft.memo || "",
-      source: draft.analysis ? (draft.analysis.demo ? "sample" : "ai") : "manual",
+      source: draft.analysis ? (draft.analysis.demo ? "sample" : draft.analysis.ocr ? "ocr" : "ai") : "manual",
       aiCoach: draft.analysis && draft.analysis.coach ? draft.analysis.coach : ""
     };
 

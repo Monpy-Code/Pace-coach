@@ -1,5 +1,6 @@
 /* 페이스 코치 서비스 워커 — 네트워크 우선, 오프라인 시 캐시 사용 */
-const CACHE = "pacecoach-v1";
+const CACHE = "pacecoach-v1.2.0";
+const OCR_CACHE = "pacecoach-ocr-v1";
 const CORE = [
   "./",
   "./index.html",
@@ -20,7 +21,7 @@ self.addEventListener("install", (e) => {
 self.addEventListener("activate", (e) => {
   e.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))
+      Promise.all(keys.filter((k) => k !== CACHE && k !== OCR_CACHE).map((k) => caches.delete(k)))
     ).then(() => self.clients.claim())
   );
 });
@@ -29,7 +30,25 @@ self.addEventListener("fetch", (e) => {
   const req = e.request;
   if (req.method !== "GET") return;
   const url = new URL(req.url);
-  if (url.origin !== self.location.origin) return;
+
+  // 무료 OCR 엔진(Tesseract.js · 학습데이터)은 한 번 받으면 오프라인에서도 쓰도록 캐시
+  if (url.origin !== self.location.origin) {
+    if (/tesseract|tessdata|jsdelivr\.net\/npm\/tesseract/i.test(url.href)) {
+      e.respondWith(
+        caches.open(OCR_CACHE).then((c) =>
+          c.match(req).then((hit) => {
+            if (hit) return hit;
+            return fetch(req).then((res) => {
+              if (res && (res.ok || res.type === "opaque")) c.put(req, res.clone()).catch(() => {});
+              return res;
+            });
+          })
+        )
+      );
+    }
+    return;
+  }
+
   e.respondWith(
     fetch(req)
       .then((res) => {
