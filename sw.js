@@ -4,8 +4,8 @@ const OCR_CACHE = "pacecoach-ocr-v1";
 const CORE = [
   "./",
   "./index.html",
-  "./styles.css",
-  "./app.js",
+  "./styles.css?v=1.2.0",
+  "./app.js?v=1.2.0",
   "./manifest.json",
   "./assets/icon-192.png",
   "./assets/icon-512.png",
