@@ -1578,6 +1578,15 @@
     octx.putImageData(grayData, 0, 0);
     var grayUrl = out.toDataURL("image/png");
 
+    // 날짜가 안 읽힐 때 다시 볼 상단 영역(날짜·거리 줄)
+    var cropH = Math.max(1, Math.round(ch * 0.4));
+    var topCv = document.createElement("canvas");
+    topCv.width = cw;
+    topCv.height = cropH;
+    var tctx = topCv.getContext("2d");
+    tctx.drawImage(out, 0, 0, cw, cropH, 0, 0, cw, cropH);
+    var topUrl = topCv.toDataURL("image/png");
+
     var thr = otsuThreshold(histOut, n);
     for (j = 0; j < n; j++) {
       var bv = gray[j] <= thr ? 0 : 255;
@@ -1589,7 +1598,7 @@
     octx.putImageData(grayData, 0, 0);
     var binUrl = out.toDataURL("image/png");
 
-    return { gray: grayUrl, binary: binUrl, width: cw, height: ch, scale: scale, inverted: inverted };
+    return { gray: grayUrl, binary: binUrl, top: topUrl, width: cw, height: ch, scale: scale, inverted: inverted };
   }
 
   /* --- OCR 결과 → 토큰(단어) --- */
@@ -1704,6 +1713,18 @@
 
   var OCR_PACE_RE = /^(\d{1,2})\s*['\u2032]\s*(\d{1,2})/;
   var OCR_TIME_RE = /^(\d{1,2})\s*[:;]\s*(\d{1,2})(?:\s*[:;]\s*(\d{1,2}))?$/;
+
+  function parseDateText(text) {
+    var t = String(text || "").replace(/\s+/g, " ");
+    var m = t.match(/(20\d{2})\D{0,4}(\d{1,2})\D{0,4}(\d{1,2})/);
+    if (!m) return null;
+    var y = parseInt(m[1], 10), mo = parseInt(m[2], 10), dy = parseInt(m[3], 10);
+    if (!(mo >= 1 && mo <= 12 && dy >= 1 && dy <= 31)) return null;
+    var isoStr = y + "-" + pad(mo) + "-" + pad(dy);
+    var gap = daysBetween(todayISO(), isoStr);
+    if (gap > 0 || gap < -730) return null;
+    return isoStr;
+  }
 
   function parseHealthCapture(data, imgHeight) {
     var chunks = groupOcrLines(collectOcrChunks(data));
@@ -1850,18 +1871,19 @@
 
     /* 5) 날짜: 2026. 11. 18. / 2026년 11월 18일 / 2026 11 18 */
     var allText = chunks.map(function (c) { return c.text; }).join(" ") + " " + String(data.text || "").replace(/\s+/g, " ");
-    var dm = allText.match(/(20\d{2})\s*[.\-/년]?\s*(\d{1,2})\s*[.\-/월]?\s*(\d{1,2})/);
-    if (!dm) dm = allText.match(/(20\d{2})\s+(\d{1,2})\s+(\d{1,2})/);
-    var y = null, mo = null, dy = null;
-    if (dm) { y = parseInt(dm[1], 10); mo = parseInt(dm[2], 10); dy = parseInt(dm[3], 10); }
-    if (!y) {
+    p.date = parseDateText(allText);
+    if (!p.date) {
       var md = allText.match(/(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
       if (!md) md = allText.match(/(\d{1,2})\s*[.\/]\s*(\d{1,2})\s*\./);
-      if (md) { mo = parseInt(md[1], 10); dy = parseInt(md[2], 10); y = new Date().getFullYear(); }
-    }
-    if (y && mo >= 1 && mo <= 12 && dy >= 1 && dy <= 31) {
-      var isoStr = y + "-" + pad(mo) + "-" + pad(dy);
-      if (daysBetween(todayISO(), isoStr) <= 0) p.date = isoStr;
+      if (md) {
+        var mMo = parseInt(md[1], 10), mDy = parseInt(md[2], 10);
+        if (mMo >= 1 && mMo <= 12 && mDy >= 1 && mDy <= 31) {
+          var thisYear = new Date().getFullYear();
+          var guess = thisYear + "-" + pad(mMo) + "-" + pad(mDy);
+          if (daysBetween(todayISO(), guess) > 0) guess = (thisYear - 1) + "-" + pad(mMo) + "-" + pad(mDy);
+          p.date = guess;
+        }
+      }
     }
 
     /* 6) 못 읽은 칸 정리 */
@@ -1909,7 +1931,8 @@
     var html = '<div class="ai-box" style="margin-top:10px"><span class="lbl">무료 OCR 인식 완료 · 정확도 ' + confTxt + " (" + conf + "%)" + (a.inverted ? " · 다크 화면 보정" : "") + "</span>" + bits.join(" · ");
     if (a.coach) html += '<span style="display:block;margin-top:7px">"' + esc(a.coach) + '"</span>';
     if (a.missing && a.missing.length) {
-      html += '<p class="tiny" style="margin-top:8px">못 읽은 칸: <b>' + a.missing.join(", ") + "</b> — 폼에서 직접 채워 주세요.</p>";
+      html += '<p class="tiny" style="margin-top:8px">못 읽은 칸: <b>' + a.missing.join(", ") + "</b> — 폼에서 직접 채워 주세요." +
+        (a.missing.indexOf("날짜") >= 0 ? " 날짜 칸은 오늘로 두었어요." : "") + "</p>";
     }
     html += '<div class="btn-row" style="margin-top:10px"><button class="btn sm" data-act="retryOcr">📸 캡처 다시 읽기</button>' +
       '<button class="btn sm primary" data-act="saveRun">이 내용으로 바로 저장</button></div>';
@@ -1951,6 +1974,29 @@
         if (seq !== ocrSeq) return;
         parsed = mergeOcrResults(parsed, parseHealthCapture(res2.data, prep.height));
       }
+      if (!parsed.date && prep.top) {
+        // 날짜는 보통 상단에 작게 있어서, 숫자만 허용해 한 번 더 읽는다
+        draft.status = "날짜를 한 번 더 확인하는 중…";
+        render();
+        await worker.setParameters({ tessedit_pageseg_mode: "6", tessedit_char_whitelist: "0123456789.:()-/" });
+        var res3 = await worker.recognize(prep.top, {}, { text: true });
+        await worker.setParameters({ tessedit_char_whitelist: "" });
+        if (seq !== ocrSeq) return;
+        var dOnly = parseDateText(res3.data.text || "");
+        if (dOnly) {
+          parsed.date = dOnly;
+          parsed.missing = parsed.missing.filter(function (m) { return m !== "날짜"; });
+        }
+        // 상단의 큰 거리 숫자를 숫자 전용으로 한 번 더 읽어 보정
+        var wlText = String(res3.data.text || "");
+        var wlDist = wlText.match(/(\d{1,3}[.,]\d{1,2})/);
+        if (wlDist) {
+          var wv = parseFloat(wlDist[1].replace(",", "."));
+          if (wv > 0.2 && wv <= 200 && (!parsed.distanceKm || Math.abs(wv - parsed.distanceKm) <= 0.15)) {
+            parsed.distanceKm = Math.round(wv * 100) / 100;
+          }
+        }
+      }
       ocrProgressCb = null;
       finishOcr(parsed, prep);
     } catch (err) {
@@ -1962,6 +2008,30 @@
       draft.error = msg + " — 폼에 숫자를 직접 넣어도 페이스는 자동 계산돼요.";
       render();
     }
+  }
+
+  /* 코치 문장이 비었을 때(진단 미해당) 쓸 기본 피드백 */
+  function ocrCoachFallback(p) {
+    if (!p.distanceKm || !p.durationSec) return "";
+    var f = fitness();
+    var pace = p.durationSec / p.distanceKm;
+    var maxHR = state.settings.maxHr || 174;
+    var out = ["평균 " + fmtPace(pace) + " · " + fmtKm(p.distanceKm) + "km를 기록했어요."];
+    if (pace <= f.pace - 12) {
+      out.push("추정 10K 페이스(" + fmtPace(f.pace) + ")보다 빠른 강도라 주 1회면 충분해요.");
+    } else if (pace >= f.pace + 40) {
+      out.push("이지 강도로 잘 조절했어요. 이 속도를 지켜야 다음 강도 훈련이 살아납니다.");
+    } else {
+      out.push("훈련 계획과 예상 기록을 다시 계산해 두었어요.");
+    }
+    if (p.avgHr && p.cadence && p.cadence < 165) {
+      out.push("케이던스 " + p.cadence + "spm은 조금 낮아요. 168~172에 맞춰 보폭을 줄여 보세요.");
+    } else if (p.avgHr && p.avgHr > Math.round(maxHR * 0.8) && pace >= f.pace + 20) {
+      out.push("심박 " + p.avgHr + "bpm은 이 페이스치고 조금 높아요. 다음엔 20~30초/km 늦춰 보세요.");
+    } else if (p.avgHr) {
+      out.push("심박 " + p.avgHr + "bpm으로 페이스를 잘 통제했어요.");
+    }
+    return out.slice(0, 2).join(" ");
   }
 
   function finishOcr(p, prep) {
@@ -1977,6 +2047,7 @@
     var run = { date: draft.date, distanceKm: p.distanceKm, durationSec: p.durationSec, avgHr: p.avgHr, cadence: p.cadence, condition: draft.condition };
     var coach = "";
     try { if (run.distanceKm && run.durationSec) coach = coachNote(run); } catch (e) { coach = ""; }
+    if (!coach) coach = ocrCoachFallback(p);
 
     draft.analysis = {
       ocr: true,
