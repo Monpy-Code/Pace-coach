@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="390" height="780" viewBox="0 0 390 780" font-family="-apple-system,'Segoe UI',Roboto,'Noto Sans KR',sans-serif">
+  <rect width="390" height="780" fill="#000000"/>
+  <!-- status bar -->
+  <text x="18" y="26" fill="#e8e8e8" font-size="12" font-weight="600">9:41</text>
+  <g fill="#e8e8e8" opacity="0.9">
+    <rect x="330" y="16" width="3" height="8" rx="1"/>
+    <rect x="336" y="13" width="3" height="11" rx="1"/>
+    <rect x="342" y="10" width="3" height="14" rx="1"/>
+    <rect x="352" y="12" width="16" height="9" rx="2.5" fill="none" stroke="#e8e8e8" stroke-width="1.4"/>
+    <rect x="354" y="14" width="10" height="5" rx="1" class="b"/>
+    <rect x="370" y="14.5" width="2" height="4" rx="1"/>
+  </g>
+  <!-- nav -->
+  <g stroke="#d8dde2" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M22 62 l-7 7 l7 7"/>
+  </g>
+  <text x="195" y="73" fill="#cfd6dc" font-size="14" text-anchor="middle" font-weight="600">운동 기록</text>
+  <g fill="#d8dde2">
+    <circle cx="352" cy="69" r="1.8"/><circle cx="358" cy="69" r="1.8"/><circle cx="364" cy="69" r="1.8"/>
+  </g>
+
+  <!-- date / title -->
+  <text x="20" y="116" fill="#7d858d" font-size="11.5">2026. 11. 17. (화) 오후 7:24</text>
+  <text x="20" y="146" fill="#ffffff" font-size="22" font-weight="700">달리기</text>
+  <text x="20" y="168" fill="#6b747c" font-size="11.5">탄천 · 야외 달리기 · GPS</text>
+
+  <!-- map -->
+  <rect x="20" y="184" width="350" height="196" rx="18" fill="#111417"/>
+  <g stroke="#1d2227" stroke-width="1">
+    <path d="M20 226 H370 M20 268 H370 M20 310 H370 M20 352 H370"/>
+    <path d="M70 184 V380 M130 184 V380 M190 184 V380 M250 184 V380 M310 184 V380"/>
+  </g>
+  <path d="M60 350 C80 320 96 330 112 300 C128 270 122 246 150 232 C178 218 196 240 220 226 C244 212 250 190 280 196 C310 202 320 224 330 214"
+        fill="none" stroke="#2fd07a" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.95"/>
+  <circle cx="60" cy="350" r="6" fill="#2fd07a"/>
+  <circle cx="330" cy="214" r="6" fill="#000" stroke="#2fd07a" stroke-width="3.5"/>
+
+  <!-- main metric -->
+  <text x="20" y="452" fill="#6b747c" font-size="11.5">거리</text>
+  <text x="18" y="502" fill="#ffffff" font-size="44" font-weight="700" letter-spacing="-1.5">8.35</text>
+  <text x="128" y="502" fill="#9aa3ab" font-size="15" font-weight="600">km</text>
+  <text x="250" y="452" fill="#6b747c" font-size="11.5">시간</text>
+  <text x="248" y="502" fill="#ffffff" font-size="44" font-weight="700" letter-spacing="-1.5">49:52</text>
+
+  <!-- stat grid -->
+  <g>
+    <rect x="20" y="532" width="168" height="86" rx="16" fill="#111417"/>
+    <text x="38" y="560" fill="#6b747c" font-size="11">평균 페이스</text>
+    <text x="38" y="592" fill="#ffffff" font-size="20" font-weight="700">5'58"</text>
+    <text x="98" y="592" fill="#7d858d" font-size="11">/km</text>
+
+    <rect x="202" y="532" width="168" height="86" rx="16" fill="#111417"/>
+    <text x="220" y="560" fill="#6b747c" font-size="11">평균 심박수</text>
+    <text x="220" y="592" fill="#ff6b6b" font-size="20" font-weight="700">141</text>
+    <text x="262" y="592" fill="#7d858d" font-size="11">bpm</text>
+
+    <rect x="20" y="628" width="168" height="86" rx="16" fill="#111417"/>
+    <text x="38" y="656" fill="#6b747c" font-size="11">케이던스</text>
+    <text x="38" y="688" fill="#ffffff" font-size="20" font-weight="700">167</text>
+    <text x="94" y="688" fill="#7d858d" font-size="11">spm</text>
+
+    <rect x="202" y="628" width="168" height="86" rx="16" fill="#111417"/>
+    <text x="220" y="656" fill="#6b747c" font-size="11">소모 칼로리</text>
+    <text x="220" y="688" fill="#ffffff" font-size="20" font-weight="700">528</text>
+    <text x="272" y="688" fill="#7d858d" font-size="11">kcal</text>
+  </g>
+
+  <text x="20" y="748" fill="#3f474e" font-size="10">Samsung Health · 운동 기록 샘플 이미지</text>
+</svg>
