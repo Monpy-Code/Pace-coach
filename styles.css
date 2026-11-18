@@ -229,6 +229,71 @@ p { margin: 0; }
 }
 .warnbox b { color: var(--amber); }
 
+/* ---------- 자동 진단 (오버페이스 · 케이던스 · 손목 심박) ---------- */
+.diag-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.diag {
+  margin-top: 7px; padding: 10px 11px;
+  border-radius: 11px;
+  font-size: 12px; line-height: 1.6;
+  border: 1px solid var(--line);
+}
+.diag b { font-weight: 700; margin-right: 3px; }
+.diag.red { background: rgba(255, 107, 107, 0.08); border-color: rgba(255, 107, 107, 0.22); color: #ffd2d2; }
+.diag.red b { color: var(--red); }
+.diag.amber { background: rgba(255, 176, 32, 0.08); border-color: rgba(255, 176, 32, 0.22); color: #ffe2b4; }
+.diag.amber b { color: var(--amber); }
+.diag.violet { background: rgba(155, 139, 255, 0.08); border-color: rgba(155, 139, 255, 0.22); color: #e0dbff; }
+.diag.violet b { color: var(--violet); }
+
+/* ---------- 보강 루틴 · 장거리 팁 ---------- */
+.routine {
+  margin-top: 12px; padding: 11px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--line-2);
+}
+.routine .rt-head {
+  font-size: 11.5px; font-weight: 700; color: var(--tx);
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  margin-bottom: 7px;
+}
+.routine .rt-head span { font-size: 10.5px; font-weight: 500; color: var(--tx-3); }
+.routine .rt-item {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  padding: 6px 0;
+  font-size: 12px; color: var(--tx-2);
+}
+.routine .rt-item + .rt-item { border-top: 1px dashed var(--line); }
+.routine .rt-item b { color: var(--tx); font-weight: 650; }
+.routine .rt-item span { font-variant-numeric: tabular-nums; color: var(--lime); font-weight: 600; }
+.routine .rt-caution {
+  margin-top: 8px; padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-size: 11px; color: var(--amber); line-height: 1.5;
+}
+.routine.compact { margin-top: 7px; padding: 9px 10px; }
+.routine.compact .rt-head { margin-bottom: 4px; font-size: 11px; }
+.routine.compact .rt-item { padding: 3px 0; font-size: 11px; }
+.routine.compact .rt-caution { margin-top: 5px; padding-top: 5px; font-size: 10.5px; }
+
+.tip {
+  margin-top: 12px; padding: 11px 12px;
+  border-radius: 12px;
+  background: rgba(155, 139, 255, 0.08);
+  border: 1px solid rgba(155, 139, 255, 0.22);
+  font-size: 12.5px; line-height: 1.6; color: #e2ddff;
+}
+.tip b { color: var(--violet); }
+.tip.compact { margin-top: 6px; padding: 8px 10px; font-size: 11px; border-radius: 9px; }
+
+.day-warn {
+  font-size: 11px; line-height: 1.55; margin-top: 6px;
+  padding: 7px 9px; border-radius: 9px;
+  background: rgba(255, 107, 107, 0.08);
+  border: 1px solid rgba(255, 107, 107, 0.2);
+  color: #ffd2d2;
+}
+
 /* ---------- buttons ---------- */
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 7px;

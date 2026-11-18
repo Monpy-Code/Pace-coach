@@ -6,7 +6,7 @@
   "use strict";
 
   var LS_KEY = "pacecoach.v1";
-  var APP_VERSION = "1.0.0";
+  var APP_VERSION = "1.1.0";
   var DAY = 86400000;
 
   /* ------------------------------------------------------------------ *
@@ -252,6 +252,15 @@
     return riegel(fit.eq10, 10, race.distance);
   }
 
+  /* 한 번의 렌더 안에서 계획을 재사용 (진단·홈·훈련 탭이 같은 계산을 공유) */
+  var planCache = null;
+  function cachedPlan() {
+    if (planCache) return planCache;
+    var race = activeRace();
+    planCache = race ? buildPlan(race, fitness()) : { weeks: [], days: [], paces: null };
+    return planCache;
+  }
+
   /* ------------------------------------------------------------------ *
    *  주간 거리 통계
    * ------------------------------------------------------------------ */
@@ -292,6 +301,27 @@
     rehearsal: [0.8, 0.87],
     race: [0.85, 0.92]
   };
+
+  var TEMPLATE = { 1: "rest", 2: "interval", 3: "easy", 4: "tempo", 5: "rest", 6: "long", 0: "recovery" };
+  var TEMPLATE_TAPER = { 1: "rest", 2: "easy", 3: "rehearsal", 4: "rest", 5: "easy", 6: "easy", 0: "rest" };
+  function templateFor(taper) { return taper ? TEMPLATE_TAPER : TEMPLATE; }
+
+  /* 지난 날짜의 계획 종류(요일 템플릿). 진단에서 "그날이 쉬운 날이었는지" 판단에 쓴다. */
+  function expectedTypeOn(dateISO) {
+    var race = activeRace();
+    if (!race) return null;
+    var toRace = daysBetween(dateISO, race.date);
+    if (toRace < 0) return null;
+    return templateFor(toRace <= 6)[fromISO(dateISO).getDay()] || "rest";
+  }
+
+  /* 휴식·보강 카드에 쓰는 무릎 보호 루틴 (중둔근/코어) */
+  var REST_ROUTINE = [
+    { name: "힙 브리지", spec: "12회 × 3세트" },
+    { name: "밴드 사이드 스텝", spec: "15보 × 3세트" },
+    { name: "클램쉘", spec: "20회 × 3세트" },
+    { name: "플랭크", spec: "45초 × 3세트" }
+  ];
 
   function baseWeekly(dist) {
     if (dist <= 5) return 18;
@@ -350,6 +380,9 @@
         if (targets.indexOf(d.type) === -1) return;
         d.originalType = d.type;
         d.type = "recovery";
+        d.tip = "";
+        d.routine = null;
+        d.caution = "";
         d.km = Math.max(3, Math.min(6, roundHalf(d.km * (d.originalType === "easy" ? 0.7 : 0.6))));
         d.title = TYPE.recovery.label + " " + fmtKm(d.km) + "km";
         d.paceLo = P.rec - 8;
@@ -360,6 +393,21 @@
         d.detail = "컨디션 신호로 강도 훈련 → 회복런으로 대체";
         d.why = "'" + (fit.knee ? "무릎 뻐근함" : "피로 누적") + "' 기록이 있어 " +
           TYPE[d.originalType].label + " 대신 회복런으로 바꿨어요. 통증이 3일 이상 이어지면 러닝을 쉬고 대퇴사두근·둔근 강화로 대체하세요.";
+      });
+    }
+
+    // 연속 러닝 금지: 어제 기록이 있는데 오늘이 고강도/장거리면 미루도록 주의 배지
+    var yesterday = addDays(today, -1);
+    var ranYesterday = state.runs.some(function (r) { return r.date === yesterday && r.distanceKm > 0; });
+    if (ranYesterday) {
+      days.forEach(function (d) {
+        if (d.date !== today) return;
+        if (["interval", "tempo", "long", "rehearsal"].indexOf(d.type) === -1) return;
+        d.consecutive = true;
+        d.consecutiveNote = "어제(" + mdKo(yesterday) + ") 달리셨으니 오늘은 휴식·보강으로 미루고 내일 뛰는 걸 권장해요. " +
+          (d.type === "long"
+            ? "장거리는 내일로 옮기고, 오늘 꼭 뛰어야 한다면 회복런 5km 이하로 줄이세요."
+            : "오늘 꼭 뛰어야 한다면 " + TYPE[d.type].label + " 대신 이지런 30분으로 낮춰 주세요.");
       });
     }
 
@@ -406,22 +454,18 @@
     }
 
     /* 템플릿 */
-    var tmpl;
-    if (o.taper) {
-      tmpl = { 1: "rest", 2: "easy", 3: "rehearsal", 4: "rest", 5: "easy", 6: "easy", 0: "rest" };
-    } else {
-      tmpl = { 1: "rest", 2: "interval", 3: "easy", 4: "tempo", 5: "rest", 6: "long", 0: "recovery" };
-    }
-    var type = tmpl[wd] || "rest";
+    var type = templateFor(o.taper)[wd] || "rest";
 
     if (type === "rest") {
       s.type = "rest";
       s.title = TYPE.rest.label;
       s.rpe = TYPE.rest.rpe;
-      s.detail = "코어 10분 · 폼롤러 5분 · 종아리 스트레칭";
+      s.detail = "중둔근·코어 보강 4종 · 폼롤러 5분 · 종아리 스트레칭";
+      s.routine = REST_ROUTINE;
+      s.caution = "스쿼트 등 깊은 무릎 굴곡은 통증 시 제외";
       s.why = o.taper
         ? "대회 전 회복이 훈련의 일부입니다. 다리에 피로를 남기지 않는 게 목표예요."
-        : "근육은 쉬는 동안 강해집니다. 대신 가벼운 보강으로 자세와 둔근을 깨워 두세요.";
+        : "근육은 쉬는 동안 강해집니다. 특히 중둔근이 약하면 착지 때 무릎이 안쪽으로 무너지면서 바깥쪽(장경인대)에 부하가 몰려요. 20분만 채워 두세요.";
       return s;
     }
 
@@ -483,7 +527,12 @@
       s.title = "장거리 " + fmtKm(s.km) + "km";
       s.hrs = hrRange("long", maxHR);
       s.rpe = TYPE.long.rpe;
-      s.detail = "대화 가능한 페이스 · 후반 2km만 살짝 올려도 OK";
+      s.detail = s.km >= 12
+        ? "9분 달리기 + 1분 걷기(런-워크) · 첫 1km는 의도적으로 느리게"
+        : "대화 가능한 페이스 · 첫 1km는 의도적으로 느리게 · 후반 2km만 살짝 올려도 OK";
+      if (s.km >= 12) {
+        s.tip = "9분 달리기 + 1분 걷기(런-워크) 권장 — 걷는 1분에 심박이 떨어져 후반 무릎 부담이 줄어요. 첫 1km는 의도적으로 느리게 시작하세요.";
+      }
       s.why = "지구력 기반을 쌓는 날입니다. 기록은 신경 쓰지 말고 '오래 편하게'만 지키세요. 이 거리가 대회 후반을 지켜줍니다.";
       return s;
     }
@@ -501,31 +550,114 @@
   }
 
   /* ------------------------------------------------------------------ *
-   *  코치 코멘트 (규칙 기반 / AI)
+   *  코치 코멘트 (규칙 기반 / AI) + 자동 진단
    * ------------------------------------------------------------------ */
-  function coachNote(run) {
+  var EASY_TYPES = { easy: 1, recovery: 1, long: 1 };
+
+  /* 그날 계획된 훈련이 "느리게 뛰어야 하는 날"이었는지 판단하기 위한 기준 페이스 */
+  function plannedFastPace(type, f) {
+    if (type === "recovery") return f.pace + 85 - 8;
+    if (type === "easy") return f.pace + 50 - 5;
+    if (type === "long") return f.pace + 60 - 6;
+    return null;
+  }
+
+  /* 기록 1건에 대한 진단: 오버페이스 · 케이던스 · 손목 심박 센서 */
+  function diagnoseRun(run) {
+    var out = [];
+    if (!run || !(run.distanceKm > 0) || !(run.durationSec > 0)) return out;
+    var pace = run.durationSec / run.distanceKm;
+    var f = fitness();
+    var plan = cachedPlan();
+    var sess = null;
+    (plan.days || []).forEach(function (d) { if (d.date === run.date) sess = d; });
+    var type = sess ? sess.type : expectedTypeOn(run.date);
+
+    /* 1) 오버페이스: 계획이 이지·회복·장거리였는데 20초/km 이상 빨랐는지 */
+    if (type && EASY_TYPES[type]) {
+      var fast = sess && sess.paceLo ? sess.paceLo : plannedFastPace(type, f);
+      if (fast) {
+        var gap = Math.round(fast - pace);
+        if (gap >= 20) {
+          var zoneTxt = sess && sess.paceHi
+            ? TYPE[type].label + " " + fmtPace(sess.paceLo) + "~" + fmtPace(sess.paceHi)
+            : TYPE[type].label + " " + fmtPace(fast) + " 내외";
+          out.push({
+            key: "overpace",
+            level: "red",
+            badge: "오버페이스 +" + gap + "초/km",
+            title: "오버페이스",
+            text: "계획(" + zoneTxt + ")보다 " + gap + "초/km 빠르게 뛰셨어요! 쉬운 날이 없으면 무릎 회복이 안 돼요. 다음 " +
+              (type === "long" ? "장거리" : type === "recovery" ? "회복런" : "이지런") + "은 " +
+              fmtPace(fast + 10) + "/km 이상으로 속도를 낮춰 주세요.",
+            gap: gap
+          });
+        }
+      }
+    }
+
+    /* 2) 케이던스 165 미만: 보폭이 길어 무릎 충격이 커짐 */
+    if (run.cadence && run.cadence < 165) {
+      out.push({
+        key: "cadence",
+        level: "amber",
+        badge: "케이던스 " + run.cadence + "spm",
+        title: "케이던스 낮음",
+        text: "보폭이 길어 무릎 충격이 커질 수 있어요. 메트로놈 168~172 BPM에 맞춰 보폭을 줄여 보세요."
+      });
+    }
+
+    /* 3) 손목 심박 센서 오측정: 빠른 페이스인데 심박이 비정상적으로 낮음 */
+    if (run.avgHr && run.avgHr > 0 && run.avgHr < 125 && pace <= 405) {
+      out.push({
+        key: "wristHr",
+        level: "violet",
+        badge: "손목 심박 의심",
+        title: "손목 센서 오측정 가능성",
+        text: "빠른 페이스 대비 심박이 낮게 찍혔어요(손목 센서 오측정 가능성). 숫자보다 '옆사람과 문장으로 대화 가능한지' 체감 강도로 판단하세요."
+      });
+    }
+
+    return out;
+  }
+
+  function diagChips(diag) {
+    if (!diag || !diag.length) return "";
+    return '<div class="diag-row">' + diag.map(function (d) {
+      return '<span class="chip ' + d.level + '">' + esc(d.badge) + "</span>";
+    }).join("") + "</div>";
+  }
+
+  function diagBlocks(diag) {
+    if (!diag || !diag.length) return "";
+    return diag.map(function (d) {
+      return '<div class="diag ' + d.level + '"><b>' + esc(d.title) + "</b> " + esc(d.text) + "</div>";
+    }).join("");
+  }
+
+  function coachNote(run, diag) {
     if (run.aiCoach) return run.aiCoach;
+    diag = diag || diagnoseRun(run);
+    var has = {};
+    diag.forEach(function (d) { has[d.key] = true; });
     var f = fitness();
     var pace = run.durationSec / run.distanceKm;
     var maxHR = state.settings.maxHr || 174;
     var out = [];
-    if (pace <= f.pace - 12) {
+    if (!has.overpace && pace <= f.pace - 12) {
       out.push("평균 " + fmtPace(pace) + "는 현재 추정 10K 페이스(" + fmtPace(f.pace) + ")보다 빠른 강도예요. 이런 날은 주 1회면 충분합니다.");
     } else if (pace >= f.pace + 45) {
       out.push("평균 " + fmtPace(pace) + " · " + fmtKm(run.distanceKm) + "km, 딱 좋은 이지 강도였어요. 이 속도를 지켜야 다음 강도 훈련이 살아납니다.");
-    } else {
+    } else if (!has.overpace) {
       out.push("평균 " + fmtPace(pace) + " · " + fmtKm(run.distanceKm) + "km 기록을 반영했어요. 훈련 계획과 예상 기록을 다시 계산했습니다.");
     }
     if (run.avgHr) {
       var easyTop = Math.round(maxHR * 0.75);
       if (run.avgHr > easyTop + 5 && pace >= f.pace + 30) {
         out.push("심박 " + run.avgHr + "bpm은 이 페이스치고 조금 높아요. 더위·수면 부족이 원인일 수 있으니 다음 이지런은 20~30초/km 늦춰 보세요.");
-      } else if (run.avgHr <= easyTop && pace <= f.pace + 20) {
+      } else if (run.avgHr <= easyTop && pace <= f.pace + 20 && !has.wristHr) {
         out.push("심박 " + run.avgHr + "bpm으로 페이스를 잘 통제했어요.");
       }
-    }
-    if (run.cadence && run.cadence < 166) {
-      out.push("케이던스 " + run.cadence + "spm — 168~172로 3%만 올려도 보폭이 줄어 무릎 충격이 완화됩니다.");
     }
     if (run.condition === "knee") {
       out.push("무릎 뻐근함이 있어 이번 주 강도 훈련을 회복런으로 낮췄어요. 3일 이상 이어지거나 계단 내려올 때 아프면 러닝을 쉬고 대퇴사두근·둔근 강화로 바꾸세요.");
@@ -543,6 +675,7 @@
   var topbar = document.getElementById("topbar");
 
   function render() {
+    planCache = null;
     var race = activeRace();
     if (state.tab === "home") view.innerHTML = viewHome(race);
     else if (state.tab === "add") view.innerHTML = viewAdd(race);
@@ -574,7 +707,7 @@
     if (!race) {
       return '<div class="stack"><div class="empty">아직 대회가 없어요.<br>설정에서 목표 대회를 추가하면 D-Day와 훈련 계획이 만들어집니다.<br><br><button class="btn primary sm" data-act="tab|settings">대회 추가하기</button></div></div>';
     }
-    var plan = buildPlan(race, f);
+    var plan = cachedPlan();
     var toRace = daysBetween(todayISO(), race.date);
     var pred = predictRace(race, f);
     var goalPace = race.goalSec / race.distance;
@@ -666,6 +799,7 @@
       '<div class="today-head">' +
       '<div><span class="chip ' + chipClass + '">' + c.label + "</span>" +
       (s.adjusted ? ' <span class="chip amber">컨디션 반영</span>' : "") +
+      (s.consecutive ? ' <span class="chip red">연속 러닝 주의</span>' : "") +
       '<h3>' + esc(s.title || c.label) + "</h3>" +
       '<p class="small muted">' + (s.km ? fmtKm(s.km) + "km · " : "") + "RPE " + (s.rpe || "–") + "</p></div>" +
       '<button class="check ' + (s.done ? "on" : "") + '" data-act="done|' + race.id + "|" + s.date + '" aria-label="완료 체크">' +
@@ -680,7 +814,12 @@
         "</div>";
     }
     if (s.detail) html += '<p class="tiny" style="margin-top:8px">' + esc(s.detail) + "</p>";
+    if (s.tip) html += tipBlock(s);
+    if (s.routine) html += routineBlock(s);
     if (s.why) html += '<div class="why"><b>코치 한마디</b> · ' + esc(s.why) + "</div>";
+    if (s.consecutive) {
+      html += '<div class="warnbox"><b>연속 러닝 주의</b> — ' + esc(s.consecutiveNote) + "</div>";
+    }
     if (f.knee || f.fatigue) {
       html += '<div class="warnbox"><b>' + (f.knee ? "무릎 뻐근함" : "피로 누적") + " 감지</b> — 최근 기록에 '" +
         (f.knee ? "무릎 뻐근함" : "피로 누적") + "' 체크가 있어 이번 주 강도 훈련을 회복런으로 낮췄습니다. 예상 기록도 " +
@@ -693,9 +832,27 @@
     return html;
   }
 
+  /* 휴식·보강 루틴 · 장거리 팁 블록 */
+  function routineBlock(s, compact) {
+    if (!s.routine || !s.routine.length) return "";
+    return '<div class="routine' + (compact ? " compact" : "") + '">' +
+      '<div class="rt-head">중둔근 · 코어 보강 <span>무릎 보호 루틴</span></div>' +
+      s.routine.map(function (r) {
+        return '<div class="rt-item"><b>' + esc(r.name) + '</b><span>' + esc(r.spec) + "</span></div>";
+      }).join("") +
+      (s.caution ? '<div class="rt-caution">' + esc(s.caution) + "</div>" : "") +
+      "</div>";
+  }
+
+  function tipBlock(s, compact) {
+    if (!s.tip) return "";
+    return '<div class="tip' + (compact ? " compact" : "") + '"><b>장거리 팁</b> · ' + esc(s.tip) + "</div>";
+  }
+
   function recRow(r) {
     var cond = { good: ["좋음", "lime"], normal: ["보통", "line"], knee: ["무릎 뻐근", "amber"], fatigue: ["피로", "red"] }[r.condition] || ["보통", "line"];
     var pace = r.durationSec / r.distanceKm;
+    var diag = diagnoseRun(r);
     return '<div class="rec">' +
       '<div class="badge"><b>' + fromISO(r.date).getDate() + "</b><span>" + (fromISO(r.date).getMonth() + 1) + "월</span></div>" +
       '<div class="grow">' +
@@ -703,7 +860,9 @@
       '<span class="chip ' + cond[1] + '">' + cond[0] + "</span></div>" +
       '<div class="meta">' + (r.avgHr ? "심박 " + r.avgHr + "bpm" : "") + (r.cadence ? " · " + r.cadence + "spm" : "") + (r.source === "sample" ? " · 샘플" : r.source === "ai" ? " · AI 추출" : "") + "</div>" +
       (r.memo ? '<div class="memo">' + esc(r.memo) + "</div>" : "") +
-      '<div class="coach">' + esc(coachNote(r)) + "</div>" +
+      diagChips(diag) +
+      '<div class="coach">' + esc(coachNote(r, diag)) + "</div>" +
+      diagBlocks(diag) +
       '<div class="rec-actions" style="margin-top:6px"><button class="mini-btn" data-act="editRun|' + r.id + '">수정</button><button class="mini-btn" data-act="delRun|' + r.id + '">삭제</button></div>' +
       "</div></div>";
   }
@@ -800,7 +959,7 @@
   function viewPlan(race) {
     if (!race) return '<div class="empty">대회를 먼저 추가해 주세요.<br><br><button class="btn primary sm" data-act="tab|settings">설정으로</button></div>';
     var f = fitness();
-    var plan = buildPlan(race, f);
+    var plan = cachedPlan();
     var doneCount = plan.days.filter(function (d) { return d.done; }).length;
     var runDays = plan.days.filter(function (d) { return d.type !== "rest"; });
     if (!plan.days.length) {
@@ -858,11 +1017,15 @@
       '<div class="day-title"><span class="chip ' + chip + '">' + c.label + "</span>" +
       (d.isToday ? '<span class="chip lime">오늘</span>' : "") +
       (d.adjusted ? '<span class="chip amber">컨디션 반영</span>' : "") +
+      (d.consecutive ? '<span class="chip red">연속 러닝 주의</span>' : "") +
       (other ? '<span class="chip violet">다른 대회</span>' : "") +
       "</div>" +
       (d.title && d.title !== c.label ? '<div class="day-title" style="margin-top:5px"><strong>' + esc(d.title) + "</strong></div>" : "") +
       (meta.length ? '<div class="day-meta">' + meta.join(" · ") + "</div>" : "") +
       (d.detail ? '<div class="day-detail">' + esc(d.detail) + "</div>" : "") +
+      (d.tip ? tipBlock(d, true) : "") +
+      (d.routine ? routineBlock(d, true) : "") +
+      (d.consecutive ? '<div class="day-warn">' + esc(d.consecutiveNote) + "</div>" : "") +
       (d.why ? '<div class="day-why">' + esc(d.why) + "</div>" : "") +
       "</div>" +
       (d.type === "rest" ? "" :
@@ -1319,9 +1482,16 @@
     draft = newDraft();
     state.tab = "home";
     save();
+    planCache = null;
+    var diag = diagnoseRun(run);
     render();
 
-    toast("기록 저장 완료 · 예상 완주 <b>" + fmtTime(predBefore) + " → " + fmtTime(predAfter) + "</b> (" + dirTxt + ")<br>훈련 계획의 페이스 구간도 다시 계산했어요.");
+    var msg = "기록 저장 완료 · 예상 완주 <b>" + fmtTime(predBefore) + " → " + fmtTime(predAfter) + "</b> (" + dirTxt + ")" +
+      "<br>훈련 계획의 페이스 구간도 다시 계산했어요.";
+    if (diag.length) {
+      msg += "<br><b>코치 진단</b> " + diag.map(function (d) { return esc(d.badge); }).join(" · ");
+    }
+    toast(msg);
   }
 
   function editRun(id) {
@@ -1500,6 +1670,9 @@
     fitness: fitness,
     plan: function () { return buildPlan(activeRace(), fitness()); },
     predict: function () { return predictRace(activeRace(), fitness()); },
+    diagnose: diagnoseRun,
+    coachNote: coachNote,
+    render: render,
     reset: function () { localStorage.removeItem(LS_KEY); state = defaultState(); draft = newDraft(); save(); render(); }
   };
 })();
