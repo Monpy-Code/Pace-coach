@@ -21,6 +21,9 @@ apps/pace-coach/
     └── samsung-health-sample.svg     '캡처 인식 체험'용 샘플 삼성헬스 화면
 ```
 
+
+> 배포 후 갱신: `index.html`의 `app.js?v=...`·`styles.css?v=...`와 `sw.js`의 `CORE` 목록에 있는 버전 쿼리를 함께 올리면 GitHub Pages의 10분 캐시를 건너뛰고 바로 새 코드가 로드됩니다.
+
 ## 로컬에서 열기
 
 ```bash
