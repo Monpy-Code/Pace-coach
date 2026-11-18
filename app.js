@@ -1716,14 +1716,49 @@
 
   function parseDateText(text) {
     var t = String(text || "").replace(/\s+/g, " ");
-    var m = t.match(/(20\d{2})\D{0,4}(\d{1,2})\D{0,4}(\d{1,2})/);
+    // 구분자(점·슬래시·공백·하이픈)가 있어야 신뢰한다. 붙어버린 숫자열은 버린다.
+    var m = t.match(/(20\d{2})[\s.\-/]{1,3}(\d{1,2})[\s.\-/]{1,3}(\d{1,2})/);
     if (!m) return null;
-    var y = parseInt(m[1], 10), mo = parseInt(m[2], 10), dy = parseInt(m[3], 10);
-    if (!(mo >= 1 && mo <= 12 && dy >= 1 && dy <= 31)) return null;
+    return makePastDate(parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10));
+  }
+
+  function makePastDate(y, mo, dy) {
+    if (!(y >= 2000 && y <= 2100 && mo >= 1 && mo <= 12 && dy >= 1 && dy <= 31)) return null;
     var isoStr = y + "-" + pad(mo) + "-" + pad(dy);
     var gap = daysBetween(todayISO(), isoStr);
     if (gap > 0 || gap < -730) return null;
     return isoStr;
+  }
+
+  /* 연도가 있는 줄의 숫자들로 (월, 일)을 골라 “오늘과 가장 가까운 과거”를 택한다.
+     삼성헬스 날짜 줄은 한글 라벨 때문에 숫자가 붙어 나오는 경우가 많다. */
+  function dateFromLines(chunks) {
+    var byLine = {};
+    chunks.forEach(function (c) { (byLine[c.lineId] = byLine[c.lineId] || []).push(c); });
+    var best = null;
+    Object.keys(byLine).forEach(function (id) {
+      var group = byLine[id];
+      var year = null;
+      var nums = [];
+      group.forEach(function (c) {
+        var ym = c.text.match(/^(20\d{2})/);
+        if (ym && !year) year = parseInt(ym[1], 10);
+        var rest = ym ? c.text.slice(4) : c.text;
+        var runs = rest.match(/\d{1,4}/g) || [];
+        runs.forEach(function (r) {
+          if (r.length <= 2) nums.push(parseInt(r, 10));
+          else if (r.length === 3) { nums.push(parseInt(r.slice(0, 2), 10)); nums.push(parseInt(r.slice(2), 10)); }
+        });
+      });
+      if (!year || nums.length < 2) return;
+      for (var i = 0; i < nums.length; i++) {
+        for (var j = i + 1; j < nums.length; j++) {
+          var cand = makePastDate(year, nums[i], nums[j]);
+          if (cand && (!best || cand > best)) best = cand;
+        }
+      }
+    });
+    return best;
   }
 
   function parseHealthCapture(data, imgHeight) {
@@ -1871,7 +1906,7 @@
 
     /* 5) 날짜: 2026. 11. 18. / 2026년 11월 18일 / 2026 11 18 */
     var allText = chunks.map(function (c) { return c.text; }).join(" ") + " " + String(data.text || "").replace(/\s+/g, " ");
-    p.date = parseDateText(allText);
+    p.date = parseDateText(allText) || dateFromLines(chunks);
     if (!p.date) {
       var md = allText.match(/(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
       if (!md) md = allText.match(/(\d{1,2})\s*[.\/]\s*(\d{1,2})\s*\./);
