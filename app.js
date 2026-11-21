@@ -6,7 +6,7 @@
   "use strict";
 
   var LS_KEY = "pacecoach.v1";
-  var APP_VERSION = "1.3.0";
+  var APP_VERSION = "1.3.1";
   var DAY = 86400000;
 
   /* ------------------------------------------------------------------ *
@@ -1890,7 +1890,14 @@
     rawNums.forEach(function (n) {
       for (var i = 0; i < nums.length; i++) {
         var o = nums[i];
-        if (Math.abs(o.c.cx - n.c.cx) < imgW * 0.05 && Math.abs(o.c.cy - n.c.cy) < imgH * 0.03) return;
+        if (Math.abs(o.c.cx - n.c.cx) < imgW * 0.05 && Math.abs(o.c.cy - n.c.cy) < imgH * 0.03) {
+          // 같은 자리에서 다르게 읽힌 값은 교차검증에 쓸 수 있게 후보로 남겨 둔다
+          if (Math.abs(o.val - n.val) > 0.004) {
+            o.alt = o.alt || [];
+            o.alt.push(n.val);
+          }
+          return;
+        }
       }
       nums.push(n);
     });
@@ -1989,6 +1996,14 @@
       if (!(implied > 0.3 && implied < 80)) return;
       var impliedR = Math.round(implied * 100) / 100;
       if (!p.distanceKm) { p.distanceKm = impliedR; return; }
+      // 같은 자리에서 다르게 읽힌 후보가 있으면 교차검증 값에 가장 가까운 쪽을 쓴다 (5.03 ↔ 5.02)
+      if (distBest && distBest.alt) {
+        var pickV = p.distanceKm, pickD = Math.abs(p.distanceKm - implied);
+        distBest.alt.forEach(function (v) {
+          if (Math.abs(v - implied) < pickD) { pickD = Math.abs(v - implied); pickV = v; }
+        });
+        if (pickD <= implied * 0.015) p.distanceKm = Math.round(pickV * 100) / 100;
+      }
       var diff = Math.abs(p.distanceKm - impliedR) / impliedR;
       if (diff <= 0.02) return;
       // OCR이 소수부는 맞게 읽고 정수 앞자리를 잃은 경우(예: 10.30 → 0.3) 복구
