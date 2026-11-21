@@ -1,11 +1,11 @@
 /* 페이스 코치 서비스 워커 — 네트워크 우선, 오프라인 시 캐시 사용 */
-const CACHE = "pacecoach-v1.2.0";
+const CACHE = "pacecoach-v1.3.0";
 const OCR_CACHE = "pacecoach-ocr-v1";
 const CORE = [
   "./",
   "./index.html",
-  "./styles.css?v=1.2.0",
-  "./app.js?v=1.2.0",
+  "./styles.css?v=1.3.0",
+  "./app.js?v=1.3.0",
   "./manifest.json",
   "./assets/icon-192.png",
   "./assets/icon-512.png",

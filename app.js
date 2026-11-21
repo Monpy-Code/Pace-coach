@@ -6,7 +6,7 @@
   "use strict";
 
   var LS_KEY = "pacecoach.v1";
-  var APP_VERSION = "1.2.0";
+  var APP_VERSION = "1.3.0";
   var DAY = 86400000;
 
   /* ------------------------------------------------------------------ *
@@ -1484,7 +1484,7 @@
     return "삼성헬스 화면에서 숫자 읽는 중…";
   }
 
-  /* --- 이미지 전처리: 2~4배 업스케일 · 흑백 · 대비 강조 · 다크 화면 반전 --- */
+  /* --- 이미지 전처리: 극성 정규화(다크 화면 반전) · 영역별 캔버스 --- */
   function preprocessCapture(dataUrl) {
     return new Promise(function (resolve, reject) {
       var img = new Image();
@@ -1494,15 +1494,6 @@
       img.onerror = function () { reject(new Error("이미지를 열지 못했어요.")); };
       img.src = dataUrl;
     });
-  }
-
-  function histQuantile(hist, total, q) {
-    var target = total * q, acc = 0;
-    for (var i = 0; i < 256; i++) {
-      acc += hist[i];
-      if (acc >= target) return i;
-    }
-    return 255;
   }
 
   function otsuThreshold(hist, total) {
@@ -1522,137 +1513,142 @@
     return thr;
   }
 
-  function buildOcrCanvases(img) {
-    var w = img.naturalWidth || img.width || 1;
-    var h = img.naturalHeight || img.height || 1;
-    var longSide = Math.max(w, h);
-    // 작은 캡처는 크게 키우고(최대 4배), 이미 큰 캡처는 그대로 둔다(긴 변 1800px 기준)
-    var scale = Math.max(1, Math.min(4, 1800 / longSide));
-    var cw = Math.max(1, Math.round(w * scale));
-    var ch = Math.max(1, Math.round(h * scale));
-    var cv = document.createElement("canvas");
-    cv.width = cw; cv.height = ch;
-    var ctx = cv.getContext("2d");
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(img, 0, 0, cw, ch);
-    var src = ctx.getImageData(0, 0, cw, ch);
-    var px = src.data;
-    var n = cw * ch;
+  /* 캔버스 한 장을 '밝은 배경 + 어두운 글자' 흑백으로 정규화해 data URL로 돌려준다.
+     다크 모드 캡처는 반전하고, Otsu 경계를 기준으로 대비를 펴서
+     (2%·98% 분위수 방식처럼 극단값에 휘둘리지 않게) 글자를 살린다. */
+  function planeFrom(ctx, w, h) {
+    var src = ctx.getImageData(0, 0, w, h);
+    var px = src.data, n = w * h;
     var gray = new Uint8ClampedArray(n);
     var sum = 0, i, j;
     for (i = 0, j = 0; j < n; i += 4, j++) {
       var g = (px[i] * 299 + px[i + 1] * 587 + px[i + 2] * 114) / 1000;
-      gray[j] = g;
-      sum += g;
+      gray[j] = g; sum += g;
     }
-    var mean = sum / n;
-    var inverted = mean < 112;            // 다크 모드 캡처는 흑백 반전
-    var histIn = new Uint32Array(256);
-    for (j = 0; j < n; j++) {
-      if (inverted) gray[j] = 255 - gray[j];
-      histIn[Math.round(gray[j])]++;
-    }
-    var lo = histQuantile(histIn, n, 0.02), hi = histQuantile(histIn, n, 0.98);
-    if (hi - lo < 45) { lo = 0; hi = 255; }
+    var inverted = sum / n < 112;
+    if (inverted) { for (j = 0; j < n; j++) gray[j] = 255 - gray[j]; }
+    var hist = new Uint32Array(256);
+    for (j = 0; j < n; j++) hist[Math.round(gray[j])]++;
+    var thr = otsuThreshold(hist, n);
+    var lo = Math.min(thr, 70), hi = Math.max(thr + 30, 190);
+    if (hi - lo < 60) { lo = 0; hi = 255; }
     var span = hi - lo || 1;
-    var histOut = new Uint32Array(256);
+    var out = ctx.createImageData(w, h);
     for (j = 0; j < n; j++) {
       var v = (gray[j] - lo) * 255 / span;
       v = v < 0 ? 0 : v > 255 ? 255 : v;
-      gray[j] = v;
-      histOut[Math.round(v)]++;
+      out.data[j * 4] = v; out.data[j * 4 + 1] = v; out.data[j * 4 + 2] = v; out.data[j * 4 + 3] = 255;
+    }
+    ctx.putImageData(out, 0, 0);
+    return { url: ctx.canvas.toDataURL("image/png"), inverted: inverted };
+  }
+
+  /* 전체 · 상세 카드 · 상단 배너 세 영역을 만든다.
+     삼성헬스는 위쪽 지도 배너에 흰 글씨 큰 거리, 아래 흰(또는 검은) 카드에 작은 상세 값이 있어
+     한 장을 통째로 이진화하면 둘 중 하나가 망가진다. 작은 글씨는 영역을 키워 다시 읽는다. */
+  function buildOcrCanvases(img) {
+    var w = img.naturalWidth || img.width || 1;
+    var h = img.naturalHeight || img.height || 1;
+    var longSide = Math.max(w, h);
+    var scale = Math.max(1, Math.min(2, 1800 / longSide));
+    var bw = Math.max(1, Math.round(w * scale));
+    var bh = Math.max(1, Math.round(h * scale));
+
+    var base = document.createElement("canvas");
+    base.width = bw; base.height = bh;
+    var bctx = base.getContext("2d");
+    bctx.imageSmoothingEnabled = true;
+    bctx.imageSmoothingQuality = "high";
+    bctx.drawImage(img, 0, 0, bw, bh);
+
+    var inverted = false;
+    function region(y0, y1, maxW) {
+      y0 = Math.max(0, Math.min(bh - 1, Math.round(y0)));
+      y1 = Math.max(y0 + 1, Math.min(bh, Math.round(y1)));
+      var rh = y1 - y0;
+      var rs = Math.max(1, Math.min(2, maxW / bw));
+      var rw = Math.max(1, Math.round(bw * rs));
+      var rhh = Math.max(1, Math.round(rh * rs));
+      var cv = document.createElement("canvas");
+      cv.width = rw; cv.height = rhh;
+      var ctx = cv.getContext("2d");
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(base, 0, y0, bw, rh, 0, 0, rw, rhh);
+      var plane = planeFrom(ctx, rw, rhh);
+      if (y0 === 0 && rh === bh) inverted = plane.inverted;
+      return { url: plane.url, w: rw, h: rhh, ox: 0, oy: y0, sx: rw / bw, sy: rhh / rh };
     }
 
-    var out = document.createElement("canvas");
-    out.width = cw; out.height = ch;
-    var octx = out.getContext("2d");
-    var grayData = octx.createImageData(cw, ch);
-    for (j = 0; j < n; j++) {
-      var gv = gray[j];
-      grayData.data[j * 4] = gv;
-      grayData.data[j * 4 + 1] = gv;
-      grayData.data[j * 4 + 2] = gv;
-      grayData.data[j * 4 + 3] = 255;
-    }
-    octx.putImageData(grayData, 0, 0);
-    var grayUrl = out.toDataURL("image/png");
-
-    // 날짜가 안 읽힐 때 다시 볼 상단 영역(날짜·거리 줄)
-    var cropH = Math.max(1, Math.round(ch * 0.4));
-    var topCv = document.createElement("canvas");
-    topCv.width = cw;
-    topCv.height = cropH;
-    var tctx = topCv.getContext("2d");
-    tctx.drawImage(out, 0, 0, cw, cropH, 0, 0, cw, cropH);
-    var topUrl = topCv.toDataURL("image/png");
-
-    var thr = otsuThreshold(histOut, n);
-    for (j = 0; j < n; j++) {
-      var bv = gray[j] <= thr ? 0 : 255;
-      grayData.data[j * 4] = bv;
-      grayData.data[j * 4 + 1] = bv;
-      grayData.data[j * 4 + 2] = bv;
-      grayData.data[j * 4 + 3] = 255;
-    }
-    octx.putImageData(grayData, 0, 0);
-    var binUrl = out.toDataURL("image/png");
-
-    return { gray: grayUrl, binary: binUrl, top: topUrl, width: cw, height: ch, scale: scale, inverted: inverted };
+    var full = region(0, bh, 1800);
+    var card = region(bh * 0.30, bh, 1900);
+    var top = region(0, bh * 0.52, 1600);
+    return {
+      full: full, card: card, top: top,
+      width: bw, height: bh, scale: scale, inverted: inverted
+    };
   }
 
   /* --- OCR 결과 → 토큰(단어) --- */
   function normOcrText(s) {
     var t = String(s == null ? "" : s);
-    t = t.replace(/[\u2018\u2019\u00b4`\u2032]/g, "'").replace(/[\u201c\u201d\u2033]/g, '"');
+    // 따옴표·프라임·도(°)·억음 등은 페이스 구분자 ' 로, 겹따옴표 계열은 " 로 통일
+    t = t.replace(/[\u2018\u2019\u00b4`\u2032\u00b0\u02da\u02dc\u2039\u203a]/g, "'");
+    t = t.replace(/[\u201c\u201d\u2033\u02ba]/g, '"');
+    t = t.replace(/[\u2010-\u2015\u2212]/g, "-");
+    t = t.replace(/\uff1a/g, ":").replace(/\uff0c/g, ",").replace(/\u3002/g, ".");
     t = t.replace(/\s+/g, " ").trim();
-    // 숫자와 헷갈리기 쉬운 글자만 보정 (O→0, l/I→1, S→5, B→8, Z→2)
-    if (/\d/.test(t) && /^[0-9OoIlSsBbZzGg.,:'"]+$/.test(t)) {
-      t = t.replace(/[Oo]/g, "0").replace(/[Il]/g, "1").replace(/[Ss]/g, "5").replace(/[Bb]/g, "8").replace(/[Zz]/g, "2").replace(/G/g, "6");
+    if (/\d/.test(t) && /^[0-9A-Za-z.,:'"()/|+\-\u00b7]+$/.test(t)) {
+      // 숫자로 읽혀야 할 자리에 자주 섞이는 글자만 보정 (O→0, l/I→1, S→5, B→8, Z→2, G→6)
+      t = t.replace(/[Oo]/g, "0").replace(/[Il|]/g, "1").replace(/[Ss]/g, "5")
+           .replace(/[Bb]/g, "8").replace(/[Zz]/g, "2").replace(/G/g, "6");
     }
     return t;
   }
 
-  function collectOcrChunks(data) {
-    var chunks = [];
+  function tokenize(data, geo, pass) {
+    var out = [];
     function add(w, lineText) {
       if (!w || !w.text) return;
       var t = normOcrText(w.text);
       if (!t) return;
       var bb = w.bbox || {};
-      var x0 = bb.x0 || 0, y0 = bb.y0 || 0, x1 = bb.x1 || 0, y1 = bb.y1 || 0;
-      chunks.push({
+      var x0 = (bb.x0 || 0) / geo.sx + geo.ox;
+      var y0 = (bb.y0 || 0) / geo.sy + geo.oy;
+      var x1 = (bb.x1 || 0) / geo.sx + geo.ox;
+      var y1 = (bb.y1 || 0) / geo.sy + geo.oy;
+      out.push({
         text: t,
         raw: w.text,
         conf: typeof w.confidence === "number" ? w.confidence : 0,
         x0: x0, y0: y0, x1: x1, y1: y1,
         h: Math.max(1, y1 - y0),
+        cx: (x0 + x1) / 2,
         cy: (y0 + y1) / 2,
-        lineText: lineText || ""
+        lineText: lineText || "",
+        pass: pass,
+        kind: w.kind || null
+      });
+    }
+    function walk(b) {
+      (b.paragraphs || []).forEach(function (p) {
+        (p.lines || []).forEach(function (l) {
+          (l.words || []).forEach(function (w) { add(w, l.text || ""); });
+        });
       });
     }
     if (data.words && data.words.length) {
       data.words.forEach(function (w) { add(w, ""); });
-    } else if (data.blocks) {
-      data.blocks.forEach(function (b) {
-        (b.paragraphs || []).forEach(function (p) {
-          (p.lines || []).forEach(function (l) {
-            (l.words || []).forEach(function (w) { add(w, l.text || ""); });
-          });
-        });
-      });
+    } else if (data.blocks && data.blocks.length) {
+      data.blocks.forEach(walk);
     }
-    if (!chunks.length && data.lines) {
+    if (!out.length && data.lines) {
       data.lines.forEach(function (l) {
         (l.words || []).forEach(function (w) { add(w, l.text || ""); });
-        if (!(l.words && l.words.length) && l.text) {
-          // 단어 상자가 없으면 줄 전체를 하나의 덩어리로
-          add({ text: l.text, confidence: l.confidence, bbox: l.bbox }, l.text);
-        }
+        if (!(l.words && l.words.length) && l.text) add({ text: l.text, confidence: l.confidence, bbox: l.bbox }, l.text);
       });
     }
-    if (!chunks.length && data.text) {
-      // 최후 수단: 글자만 있을 때 줄·토큰에 가짜 좌표를 부여
+    if (!out.length && data.text) {
       var y = 0;
       String(data.text).split(/\r?\n/).forEach(function (ln) {
         y += 10;
@@ -1661,65 +1657,60 @@
           var t = normOcrText(w);
           if (!t) return;
           var wd = Math.max(8, t.length * 8);
-          chunks.push({ text: t, raw: w, conf: 0, x0: x, y0: y, x1: x + wd, y1: y + 10, h: 10, cy: y + 5, lineText: ln, fallback: true });
+          out.push({
+            text: t, raw: w, conf: 0, x0: x, y0: y, x1: x + wd, y1: y + 10,
+            h: 10, cx: x + wd / 2, cy: y + 5, lineText: ln, pass: pass, fallback: true
+          });
           x += wd + 8;
         });
       });
     }
-    return chunks;
+    return out;
   }
 
-  function groupOcrLines(chunks) {
-    var sorted = chunks.slice().sort(function (a, b) { return a.cy - b.cy; });
-    var id = 0, refCy = null, refH = 1;
-    sorted.forEach(function (c) {
-      if (refCy == null || Math.abs(c.cy - refCy) > Math.max(9, Math.min(c.h, refH) * 0.75)) {
-        id++;
-        refCy = c.cy;
-        refH = c.h;
-      } else {
-        refCy = (refCy + c.cy) / 2;
-        refH = Math.max(refH, c.h);
-      }
-      c.lineId = id;
+  function groupOcrLines(tokens) {
+    var byPass = {};
+    tokens.forEach(function (t) { (byPass[t.pass] = byPass[t.pass] || []).push(t); });
+    var id = 0;
+    Object.keys(byPass).forEach(function (k) {
+      var list = byPass[k].slice().sort(function (a, b) { return a.cy - b.cy; });
+      var refCy = null, refH = 1;
+      list.forEach(function (c) {
+        if (refCy == null || Math.abs(c.cy - refCy) > Math.max(9, Math.min(c.h, refH) * 0.7)) {
+          id++; refCy = c.cy; refH = c.h;
+        } else {
+          refCy = (refCy + c.cy) / 2; refH = Math.max(refH, c.h);
+        }
+        c.passLine = k + "#" + id;
+      });
     });
-    return chunks;
+    return tokens;
   }
 
   function unitHit(text, kind) {
     var t = String(text == null ? "" : text).toLowerCase().replace(/[\s.,|]/g, "");
     if (!t) return false;
-    if (kind === "km") return /(km|krn|knm|knn)/.test(t);
-    if (kind === "bpm") return /(bpm|bpnn|bprn|bom|dpm)/.test(t);
-    if (kind === "spm") return /(spm|5pm|spn|spni|sprn)/.test(t);
-    if (kind === "kcal") return /(kcal|kca1|kal)/.test(t);
-    if (kind === "slashkm") return /(\/km|\/krn|perkm|1km\/)/.test(t);
+    if (kind === "km") return /(km|krn|knm|knn|kms|kmh)/.test(t);
+    if (kind === "bpm") return /(bpm|bpnn|bprn|bom|dpm|6pm)/.test(t);
+    if (kind === "spm") return /(spm|5pm|spn|spni|sprn|epm)/.test(t);
+    if (kind === "kcal") return /(kcal|kca1|kal|kcai)/.test(t);
+    if (kind === "slashkm") return /(\/km|\/krn|perkm|1km\/|km\/)/.test(t);
     return false;
   }
 
-  /* 페이스/시간 등 뒤에 붙은 단위를 같은 줄에서 찾기 */
-  function unitNearby(c, kind) {
+  /* 같은 줄에서 바로 뒤(또는 앞)에 붙은 단위를 찾는다 */
+  function unitNearby(c, kind, tokens) {
     if (unitHit(c.text, kind)) return true;
-    var limit = Math.max(14, c.h * 2.4);
-    for (var i = 0; i < c._all.length; i++) {
-      var o = c._all[i];
-      if (o === c || o.lineId !== c.lineId) continue;
-      var gap = o.x0 - c.x1;
-      if (gap < -8 || gap > limit) continue;
+    var limit = Math.max(16, c.h * 3.4);
+    for (var i = 0; i < tokens.length; i++) {
+      var o = tokens[i];
+      if (o === c || o.passLine !== c.passLine) continue;
+      // 숫자 바로 뒤(또는 앞)에 붙은 단위만 인정한다 — 같은 줄의 멀리 있는 단위는 다른 칸 값이다
+      var d = Math.max(o.x0 - c.x1, c.x0 - o.x1, 0);
+      if (d > limit) continue;
       if (unitHit(o.text, kind)) return true;
     }
     return false;
-  }
-
-  var OCR_PACE_RE = /^(\d{1,2})\s*['\u2032]\s*(\d{1,2})/;
-  var OCR_TIME_RE = /^(\d{1,2})\s*[:;]\s*(\d{1,2})(?:\s*[:;]\s*(\d{1,2}))?$/;
-
-  function parseDateText(text) {
-    var t = String(text || "").replace(/\s+/g, " ");
-    // 구분자(점·슬래시·공백·하이픈)가 있어야 신뢰한다. 붙어버린 숫자열은 버린다.
-    var m = t.match(/(20\d{2})[\s.\-/]{1,3}(\d{1,2})[\s.\-/]{1,3}(\d{1,2})/);
-    if (!m) return null;
-    return makePastDate(parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10));
   }
 
   function makePastDate(y, mo, dy) {
@@ -1730,41 +1721,136 @@
     return isoStr;
   }
 
-  /* 연도가 있는 줄의 숫자들로 (월, 일)을 골라 “오늘과 가장 가까운 과거”를 택한다.
-     삼성헬스 날짜 줄은 한글 라벨 때문에 숫자가 붙어 나오는 경우가 많다. */
-  function dateFromLines(chunks) {
-    var byLine = {};
-    chunks.forEach(function (c) { (byLine[c.lineId] = byLine[c.lineId] || []).push(c); });
-    var best = null;
-    Object.keys(byLine).forEach(function (id) {
-      var group = byLine[id];
-      var year = null;
-      var nums = [];
-      group.forEach(function (c) {
-        var ym = c.text.match(/^(20\d{2})/);
-        if (ym && !year) year = parseInt(ym[1], 10);
-        var rest = ym ? c.text.slice(4) : c.text;
-        var runs = rest.match(/\d{1,4}/g) || [];
-        runs.forEach(function (r) {
-          if (r.length <= 2) nums.push(parseInt(r, 10));
-          else if (r.length === 3) { nums.push(parseInt(r.slice(0, 2), 10)); nums.push(parseInt(r.slice(2), 10)); }
-        });
-      });
-      if (!year || nums.length < 2) return;
-      for (var i = 0; i < nums.length; i++) {
-        for (var j = i + 1; j < nums.length; j++) {
-          var cand = makePastDate(year, nums[i], nums[j]);
-          if (cand && (!best || cand > best)) best = cand;
-        }
-      }
-    });
-    return best;
+  /* 날짜: 캡처 위쪽(거리 아래) 줄에서 연도·월·일을 찾는다.
+     한글 라벨(년·월·일)은 eng 모델이 못 읽으므로 숫자와 괄호(요일) 위치만 보고 고른다.
+     예) "2026 112 9 (Y) 25 8:47" → 연도 2026, 112 → 11월, (Y) 앞의 9 → 9일 */
+  function dateRuns(text) {
+    var out = [];
+    var re = /\d+/g, m;
+    while ((m = re.exec(String(text || "")))) out.push({ raw: m[0], v: parseInt(m[0], 10) });
+    return out;
   }
 
-  function parseHealthCapture(data, imgHeight) {
-    var chunks = groupOcrLines(collectOcrChunks(data));
-    chunks.forEach(function (c) { c._all = chunks; });
-    var H = chunks.length && chunks[0].fallback ? 0 : (imgHeight || 0);
+  function monthFromRun(run) {
+    if (run.v >= 1 && run.v <= 12) return run.v;
+    if (run.raw.length === 3) {
+      var pre = parseInt(run.raw.slice(0, 2), 10);
+      if (pre >= 1 && pre <= 12) return pre;
+      var suf = parseInt(run.raw.slice(1), 10);
+      if (suf >= 1 && suf <= 12) return suf;
+    }
+    return null;
+  }
+
+  function dayFromRun(run) {
+    if (run.v >= 1 && run.v <= 31) return run.v;
+    if (run.raw.length === 3) {
+      var pre = parseInt(run.raw.slice(0, 2), 10);
+      if (pre >= 1 && pre <= 31) return pre;
+      var suf = parseInt(run.raw.slice(1), 10);
+      if (suf >= 1 && suf <= 31) return suf;
+    }
+    return null;
+  }
+
+  function parseDateTokens(tokens, imgH) {
+    var byLine = {};
+    tokens.forEach(function (c) {
+      if (imgH && c.cy > imgH * 0.5) return;               // 날짜는 캡처 위쪽에만 있다
+      (byLine[c.passLine] = byLine[c.passLine] || []).push(c);
+    });
+    var best = null;
+    function consider(date, score) {
+      if (!date) return;
+      if (!best || score > best.score || (score === best.score && date > best.date)) best = { date: date, score: score };
+    }
+    Object.keys(byLine).forEach(function (k) {
+      var line = byLine[k].slice().sort(function (a, b) { return a.cx - b.cx; });
+      var yearIdx = -1, year = null;
+      for (var i = 0; i < line.length; i++) {
+        var ym = line[i].text.match(/(20\d{2})/);
+        if (ym) { yearIdx = i; year = parseInt(ym[1], 10); break; }
+      }
+      // 연도 뒤(또는 같은 토큰의 나머지) 숫자들을 순서대로 모은다
+      var runs = [];
+      for (var j = Math.max(0, yearIdx); j < line.length; j++) {
+        var parts = dateRuns(line[j].text);
+        for (var q = 0; q < parts.length; q++) {
+          if (j === yearIdx && parts[q].raw.length >= 4 && parts[q].raw.indexOf(String(year)) === 0) {
+            var rest = parts[q].raw.slice(String(year).length);
+            if (rest.length) runs.push({ raw: rest, v: parseInt(rest, 10), tok: j, glued: true });
+            continue;
+          }
+          if (j === yearIdx && !year) continue;
+          runs.push({ raw: parts[q].raw, v: parts[q].v, tok: j, glued: false });
+        }
+      }
+      if (year && !runs.length) return;
+
+      // 요일 괄호가 있으면 그 바로 앞 숫자를 '일'로 본다 (삼성헬스 날짜 줄 특징)
+      var parenTok = -1;
+      for (var p = yearIdx + 1; p < line.length; p++) {
+        if (/[([{]/.test(line[p].text)) { parenTok = p; break; }
+      }
+      var dayPick = null, monthPick = null;
+      if (parenTok > 0) {
+        for (var r = runs.length - 1; r >= 0; r--) {
+          if (runs[r].tok >= parenTok) continue;
+          var d0 = dayFromRun(runs[r]);
+          if (d0) { dayPick = { v: d0, i: r, score: 3 }; break; }
+        }
+      }
+      if (dayPick) {
+        for (var m = dayPick.i - 1; m >= 0; m--) {
+          var mo0 = monthFromRun(runs[m]);
+          if (mo0) { monthPick = { v: mo0, i: m, score: 2 + (runs[m].raw.length === 3 ? 1 : 0) }; break; }
+        }
+      }
+      if (!dayPick) {
+        for (var mm = 0; mm < runs.length; mm++) {
+          var mo1 = monthFromRun(runs[mm]);
+          if (!mo1) continue;
+          for (var dd = mm + 1; dd < runs.length; dd++) {
+            var d1 = dayFromRun(runs[dd]);
+            if (!d1) continue;
+            var sc = 1 + (dd === mm + 1 ? 1 : 0) + (runs[mm].raw.length === 3 ? 1 : 0) - (dd - mm > 2 ? 1 : 0);
+            if (!monthPick || sc > monthPick.score) { monthPick = { v: mo1, i: mm, score: sc }; dayPick = { v: d1, i: dd, score: sc }; }
+            break;
+          }
+          if (monthPick && monthPick.score >= 3) break;
+        }
+      }
+      if (!monthPick || !dayPick) {
+        /* 연도 없이 월·일만 읽힌 경우 */
+        if (!year) {
+          for (var x = 0; x < runs.length; x++) {
+            var mx = monthFromRun(runs[x]);
+            if (!mx) continue;
+            for (var y2 = x + 1; y2 < runs.length; y2++) {
+              var dy2 = dayFromRun(runs[y2]);
+              if (!dy2) continue;
+              var thisYear = new Date().getFullYear();
+              var g = makePastDate(thisYear, mx, dy2);
+              if (!g) g = makePastDate(thisYear - 1, mx, dy2);
+              consider(g, 0);
+              break;
+            }
+          }
+        }
+        return;
+      }
+      consider(makePastDate(year, monthPick.v, dayPick.v), (monthPick.score || 0) + (dayPick.score || 0));
+    });
+    return best ? best.date : null;
+  }
+
+  /* --- 토큰들을 모아 삼성헬스 기록으로 해석 --- */
+  function parseTokens(tokens, meta) {
+    meta = meta || {};
+    var imgH = meta.height || 1;
+    var imgW = meta.width || 1;
+    tokens = groupOcrLines(tokens);
+
     var p = {
       date: null,
       distanceKm: null,
@@ -1773,182 +1859,263 @@
       avgHr: null,
       cadence: null,
       kcal: null,
-      confidence: Math.round(typeof data.confidence === "number" ? data.confidence : 0),
+      confidence: 0,
       missing: [],
-      text: String(data.text || "").slice(0, 600)
+      inverted: !!meta.inverted,
+      text: String(meta.text || "").slice(0, 600)
     };
 
-    /* 1) 거리: 큰 숫자 + km (페이스의 /km는 제외) */
-    var distBest = null;
-    chunks.forEach(function (c) {
-      var m = c.text.match(/^(\d{1,3}[.,]\d{1,2}|\d{1,3})\s*(.*)$/);
+    function dbg(o) {
+      if (typeof window !== "undefined" && window.__paceOcrVerbose && window.console && window.console.log) window.console.log("[ocr]", o);
+    }
+    var rawNums = [];
+    tokens.forEach(function (c) {
+      var m = c.text.match(/(\d{1,4})(?:[.,](\d{1,3}))?/);
       if (!m) return;
-      var rest = m[2] || "";
-      var inline = unitHit(rest, "km") && !unitHit(rest, "slashkm");
-      var slash = unitHit(rest, "slashkm") || unitHit(rest, "kcal");
-      if (slash) return;
-      if (!inline && !(unitNearby(c, "km") && !unitNearby(c, "slashkm"))) return;
-      var v = parseFloat(m[1].replace(",", "."));
-      if (!(v > 0.2 && v <= 200)) return;
-      var score = c.h * (inline ? 1.25 : 1) * (0.55 + Math.min(1, c.conf / 100));
-      if (!distBest || score > distBest.score) distBest = { v: v, score: score, c: c };
+      var dec = m[2] || null;
+      rawNums.push({
+        c: c,
+        val: parseFloat(m[1] + (dec ? "." + dec : "")),
+        intLen: m[1].length,
+        dec: dec,
+        h: c.h,
+        cyF: c.cy / imgH,
+        cxF: c.cx / imgW,
+        conf: c.conf
+      });
     });
+    /* 여러 번 읽은 같은 자리의 숫자는 하나만 남긴다(신뢰도 높은 쪽) */
+    var nums = [];
+    rawNums.sort(function (a, b) { return b.conf - a.conf; });
+    rawNums.forEach(function (n) {
+      for (var i = 0; i < nums.length; i++) {
+        var o = nums[i];
+        if (Math.abs(o.c.cx - n.c.cx) < imgW * 0.05 && Math.abs(o.c.cy - n.c.cy) < imgH * 0.03) return;
+      }
+      nums.push(n);
+    });
+    var maxH = 0;
+    nums.forEach(function (n) { if (n.h > maxH) maxH = n.h; });
+    if (!maxH) maxH = 1;
+
+    /* 1) 거리 — 'XX.XX km' 이면서 화면에서 가장 큰 숫자 */
+    var distCands = [];
+    nums.forEach(function (n) {
+      if (!(n.val > 0.2 && n.val <= 200)) return;
+      if (n.cyF > 0.62) return;                       // 상세 카드 안 숫자는 거리가 아니다
+      var inline = unitHit(n.c.text, "km") && !unitHit(n.c.text, "slashkm");
+      var near = !inline && unitNearby(n.c, "km", tokens) && !unitNearby(n.c, "slashkm", tokens);
+      var big = n.h >= 0.72 * maxH;
+      if (!inline && !near && !(big && n.dec)) return;
+      if (unitHit(n.c.text, "kcal") || unitHit(n.c.text, "spm") || unitHit(n.c.text, "bpm")) return;
+      var score = (inline ? 3 : near ? 2.2 : 0) + (big ? 1.4 : 0)
+        + Math.min(1, n.conf / 100) + (n.dec && n.dec.length === 2 ? 0.5 : 0) + Math.min(1, n.h / maxH);
+      distCands.push({ v: n.val, dec: n.dec, score: score, c: n.c });
+    });
+    distCands.sort(function (a, b) { return b.score - a.score; });
+    var distBest = distCands[0] || null;
     if (distBest) p.distanceKm = Math.round(distBest.v * 100) / 100;
 
-    /* 2) 시간/페이스 후보 수집 */
-    var timeCands = [];
-    chunks.forEach(function (c) {
-      var t = c.text;
-      var pm = t.match(OCR_PACE_RE);
-      var tm = t.match(OCR_TIME_RE);
-      var sec = null, isPace = false;
-      if (pm) {
-        var mm = parseInt(pm[1], 10), ss = parseInt(pm[2], 10);
-        if (mm >= 2 && mm <= 20 && ss < 60) { sec = mm * 60 + ss; isPace = true; }
+    /* 큰 숫자 왼쪽의 '1'이 따로 떨어져 읽힌 경우(10.30 → 0.30) 앞자리를 붙여 준다 */
+    if (distBest && p.distanceKm > 0 && p.distanceKm < 1) {
+      var leadTok = null, leadGap = 1e9;
+      tokens.forEach(function (o) {
+        if (o === distBest.c || o.passLine !== distBest.c.passLine) return;
+        var gap = distBest.c.x0 - o.x1;
+        if (gap < -4 || gap > distBest.c.h * 1.1) return;
+        if (o.h < distBest.c.h * 0.55) return;
+        if (/^[1Il|]$/.test(o.text) && gap < leadGap) { leadGap = gap; leadTok = o; }
+      });
+      if (leadTok) {
+        var txt = distBest.c.text.replace(/[^0-9.,]/g, "");
+        var merged = parseFloat("1" + txt.replace(",", "."));
+        if (merged > 1 && merged < 200) p.distanceKm = Math.round(merged * 100) / 100;
       }
-      if (sec == null && tm) {
-        var a = parseInt(tm[1], 10), b = parseInt(tm[2], 10), cc = tm[3] != null ? parseInt(tm[3], 10) : null;
-        if (b < 60 && (cc == null || cc < 60)) {
-          var s2 = cc != null ? a * 3600 + b * 60 + cc : a * 60 + b;
-          if (s2 >= 45 && s2 <= 35999) sec = s2;
-        }
-      }
-      if (sec == null) return;
-      var lineTxt = (c.lineText || "") + " " + chunks.filter(function (o) { return o.lineId === c.lineId; }).map(function (o) { return o.text; }).join(" ");
-      if (!isPace) {
-        if (/20\d{2}/.test(lineTxt)) return;                 // 날짜 줄의 시각(예: 9:36)
-        if (H && c.cy < H * 0.05 && c.h < H * 0.022) return;  // 상태바 시계
-      }
-      timeCands.push({ sec: sec, pace: isPace, h: c.h, conf: c.conf, x0: c.x0, c: c });
-    });
-
-    var paceCand = timeCands.filter(function (x) { return x.pace; }).sort(function (a, b) {
-      return (b.h - a.h) || (b.conf - a.conf);
-    })[0] || null;
-    var durCands = timeCands.filter(function (x) { return !x.pace; });
-    var duration = null;
-
-    if (durCands.length === 1) {
-      duration = durCands[0];
-    } else if (durCands.length > 1) {
-      var pick = null;
-      if (distBest && paceCand) {
-        // 거리×페이스와 가장 가까운 시간을 고른다
-        var target = distBest.v * paceCand.sec;
-        durCands.forEach(function (d) {
-          var err = Math.abs(d.sec - target) / target;
-          if (!pick || err < pick.err) pick = { d: d, err: err };
-        });
-        if (pick && pick.err > 0.12) pick = null;
-      }
-      if (!pick && distBest) {
-        // 페이스 글자가 안 읽혔을 때: 두 시간값의 조합이 거리와 맞는지 확인
-        var bestPair = null;
-        durCands.forEach(function (d) {
-          durCands.forEach(function (o) {
-            if (o === d) return;
-            var implied = d.sec / distBest.v;
-            var err = Math.abs(implied - o.sec) / Math.max(1, o.sec);
-            if (!bestPair || err < bestPair.err) bestPair = { d: d, o: o, err: err };
-          });
-        });
-        if (bestPair && bestPair.err < 0.05) {
-          pick = { d: bestPair.d.sec >= bestPair.o.sec ? bestPair.d : bestPair.o, err: bestPair.err };
-          if (!paceCand) paceCand = bestPair.d.sec >= bestPair.o.sec ? bestPair.o : bestPair.d;
-        }
-      }
-      if (!pick) {
-        // 글자 높이(폰트 크기)가 가장 큰 값 → 화면의 큰 숫자
-        var sorted = durCands.slice().sort(function (a, b) { return (b.h - a.h) || (b.sec - a.sec); });
-        pick = { d: sorted[0] };
-      }
-      duration = pick.d;
     }
 
-    if (duration) p.durationSec = duration.sec;
-    if (paceCand) p.avgPaceSec = paceCand.sec;
+    /* 2) 시간 · 페이스 */
+    var paceCands = [], timeCands = [];
+    tokens.forEach(function (c) {
+      var t = c.text;
+      var pm = t.match(/^(\d{1,2})\s*['\u2032\s]\s*(\d{1,2})/) || t.match(/(\d{1,2})['\u2032](\d{2})/);
+      if (pm) {
+        var mm = parseInt(pm[1], 10), ss = parseInt(pm[2], 10);
+        if (mm >= 2 && mm <= 20 && ss < 60) {
+          var ps = mm * 60 + ss;
+          paceCands.push({
+            sec: ps, c: c,
+            score: (unitHit(t, "slashkm") ? 2 : 0) + Math.min(1, c.conf / 100) + Math.min(1.2, c.h / imgH * 26)
+          });
+        }
+      }
+      var tm = t.match(/^(\d{1,3})\s*[:;]\s*(\d{1,2})(?:\s*[:;]\s*(\d{1,2}))?$/);
+      if (tm) {
+        var a1 = parseInt(tm[1], 10), b1 = parseInt(tm[2], 10), c1 = tm[3] != null ? parseInt(tm[3], 10) : null;
+        if (b1 < 60 && (c1 == null || c1 < 60)) {
+          var s2 = c1 != null ? a1 * 3600 + b1 * 60 + c1 : a1 * 60 + b1;
+          if (s2 >= 45 && s2 <= 36000) {
+            var lineTxt = c.lineText || "";
+            var nearDate = /20\d{2}/.test(lineTxt) || c.cy < imgH * 0.06;
+            if (!nearDate) timeCands.push({ sec: s2, c: c, conf: c.conf, h: c.h });
+          }
+        }
+      }
+    });
+    paceCands.sort(function (a, b) { return b.score - a.score; });
+    var paceBest = paceCands[0] || null;
+    if (paceBest) p.avgPaceSec = paceBest.sec;
 
-    /* 3) 서로 계산해서 빈칸 메우기 */
-    if (!p.durationSec && p.distanceKm && p.avgPaceSec) p.durationSec = Math.round(p.distanceKm * p.avgPaceSec);
-    if (!p.avgPaceSec && p.distanceKm && p.durationSec) p.avgPaceSec = Math.round(p.durationSec / p.distanceKm);
+    if (timeCands.length) {
+      var pick = null;
+      if (distBest && paceBest) {
+        var target = p.distanceKm * p.avgPaceSec;
+        var bestErr = 1;
+        timeCands.forEach(function (d) {
+          var err = Math.abs(d.sec - target) / Math.max(1, target);
+          if (err < bestErr) { bestErr = err; pick = d; }
+        });
+        if (bestErr > 0.15) pick = null;
+      }
+      if (!pick) {
+        pick = timeCands.slice().sort(function (a, b) { return (b.h - a.h) || (b.conf - a.conf); })[0];
+      }
+      p.durationSec = pick.sec;
+    }
+
+    /* 3) 서로 계산해서 빈칸 메우기 + 앞자리 유실 복구 */
+    function repairDistance() {
+      if (!p.durationSec || !p.avgPaceSec) return;
+      var implied = p.durationSec / p.avgPaceSec;
+      if (!(implied > 0.3 && implied < 80)) return;
+      var impliedR = Math.round(implied * 100) / 100;
+      if (!p.distanceKm) { p.distanceKm = impliedR; return; }
+      var diff = Math.abs(p.distanceKm - impliedR) / impliedR;
+      if (diff <= 0.02) return;
+      // OCR이 소수부는 맞게 읽고 정수 앞자리를 잃은 경우(예: 10.30 → 0.3) 복구
+      var fracRead = p.distanceKm - Math.floor(p.distanceKm);
+      var fracImp = impliedR - Math.floor(impliedR);
+      var fracClose = Math.abs(fracRead - fracImp) <= 0.03 || Math.abs(fracImp - fracRead) >= 0.97;
+      if (p.distanceKm < impliedR && fracClose) {
+        p.distanceKm = Math.round((Math.floor(impliedR) + fracRead) * 100) / 100;
+      } else {
+        p.distanceKm = impliedR;
+      }
+    }
+    repairDistance();
     if (!p.distanceKm && p.durationSec && p.avgPaceSec) {
       var dv = p.durationSec / p.avgPaceSec;
       if (dv > 0.2 && dv < 100) p.distanceKm = Math.round(dv * 100) / 100;
     }
+    if (!p.durationSec && p.distanceKm && p.avgPaceSec) p.durationSec = Math.round(p.distanceKm * p.avgPaceSec);
+    if (!p.avgPaceSec && p.distanceKm && p.durationSec) p.avgPaceSec = Math.round(p.durationSec / p.distanceKm);
 
-    /* 4) 심박·케던스: 숫자 옆의 단위(bpm/spm)로 구분 */
-    function pickUnitNumber(kind, min, max, forbid) {
+    /* 4) 심박 · 케이던스 · 칼로리 — 단위(bpm/spm/kcal) 우선, 없으면 카드 격자 순서로 */
+    function unitNumber(kind, min, max, forbid) {
       var best = null;
-      chunks.forEach(function (c) {
-        var m = c.text.match(/^(\d{2,3})\s*([a-z]{1,5})?$/i);
-        if (!m) return;
-        var v = parseInt(m[1], 10);
-        if (v < min || v > max) return;
-        if (forbid && (unitHit(c.text, forbid) || unitNearby(c, forbid))) return;
-        var inline = m[2] ? unitHit(m[2], kind) : false;
-        if (!inline && !unitNearby(c, kind)) return;
-        var score = (inline ? 3 : 2) + Math.min(1, c.conf / 100) + c.h / 500;
-        if (!best || score > best.score) best = { v: v, score: score };
+      nums.forEach(function (n) {
+        if (!(n.val >= min && n.val <= max)) return;
+        var inline = unitHit(n.c.text, kind);
+        var near = !inline && unitNearby(n.c, kind, tokens);
+        if (!inline && !near) return;
+        if (forbid) {
+          for (var i = 0; i < forbid.length; i++) {
+            if (unitHit(n.c.text, forbid[i]) || unitNearby(n.c, forbid[i], tokens)) return;
+          }
+        }
+        var score = (inline ? 3 : 1.8) + Math.min(1, n.conf / 100) + Math.min(1.4, n.h / imgH * 30);
+        if (!best || score > best.score) best = { v: Math.round(n.val), score: score };
       });
       return best ? best.v : null;
     }
-    p.avgHr = pickUnitNumber("bpm", 55, 215, "spm");
-    p.cadence = pickUnitNumber("spm", 110, 225, "bpm");
+    p.avgHr = unitNumber("bpm", 55, 215, ["spm", "kcal"]);
+    p.cadence = unitNumber("spm", 110, 225, ["bpm", "kcal"]);
+    p.kcal = unitNumber("kcal", 30, 5000, ["bpm", "spm"]);
 
-    var kcalBest = null;
-    chunks.forEach(function (c) {
-      var m = c.text.match(/^(\d{2,4})\s*([a-z]{1,5})?$/i);
-      if (!m || !(m[2] && unitHit(m[2], "kcal"))) return;
-      var v = parseInt(m[1], 10);
-      if (v >= 30 && v <= 5000) kcalBest = v;
-    });
-    p.kcal = kcalBest;
-
-    /* 5) 날짜: 2026. 11. 18. / 2026년 11월 18일 / 2026 11 18 */
-    var allText = chunks.map(function (c) { return c.text; }).join(" ") + " " + String(data.text || "").replace(/\s+/g, " ");
-    p.date = parseDateText(allText) || dateFromLines(chunks);
-    if (!p.date) {
-      var md = allText.match(/(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
-      if (!md) md = allText.match(/(\d{1,2})\s*[.\/]\s*(\d{1,2})\s*\./);
-      if (md) {
-        var mMo = parseInt(md[1], 10), mDy = parseInt(md[2], 10);
-        if (mMo >= 1 && mMo <= 12 && mDy >= 1 && mDy <= 31) {
-          var thisYear = new Date().getFullYear();
-          var guess = thisYear + "-" + pad(mMo) + "-" + pad(mDy);
-          if (daysBetween(todayISO(), guess) > 0) guess = (thisYear - 1) + "-" + pad(mMo) + "-" + pad(mDy);
-          p.date = guess;
+    /* 카드 격자: 삼성헬스 '운동 상세보기'는 2열 × 3행이다.
+       왼쪽 열 = 운동 시간·평균 심박수·평균 케이던스, 오른쪽 열 = 평균 페이스·총 소모 칼로리·총 누적 상승.
+       단위(bpm/spm)가 안 읽혔을 때 이 순서로 값을 채운다. */
+    if (p.avgHr == null || p.cadence == null || p.kcal == null || p.durationSec == null) {
+      var cardNums = nums.filter(function (n) {
+        return n.cyF > 0.26 && n.val > 0 && !unitHit(n.c.text, "km") && !unitHit(n.c.text, "slashkm");
+      });
+      if (cardNums.length >= 2) {
+        var hs = cardNums.map(function (n) { return n.h; }).sort(function (a, b) { return a - b; });
+        var medH = hs[Math.floor(hs.length / 2)];
+        // 값 숫자만 남긴다(작은 라벨·축 눈금 제외)
+        var vals = cardNums.filter(function (n) { return n.h >= medH * 0.8; });
+        if (vals.length >= 2) {
+          vals.sort(function (a, b) { return a.c.cx - b.c.cx; });
+          var xss = vals.map(function (n) { return n.c.cx; });
+          var mid = (xss[0] + xss[xss.length - 1]) / 2;
+          var left = [], right = [];
+          vals.forEach(function (n) { (n.c.cx < mid ? left : right).push(n); });
+          dbg({ grid: { mid: Math.round(mid), left: left.map(function (n) { return [n.c.text, Math.round(n.val), Math.round(n.c.cx), Math.round(n.c.cy)]; }), right: right.map(function (n) { return [n.c.text, Math.round(n.val), Math.round(n.c.cx), Math.round(n.c.cy)]; }) } });
+          left.sort(function (a, b) { return a.c.cy - b.c.cy; });
+          right.sort(function (a, b) { return a.c.cy - b.c.cy; });
+          // 왼쪽 열에서 '운동 시간' 줄을 찾아 기준점으로 삼는다
+          var tIdx = -1;
+          for (var li = 0; li < left.length; li++) {
+            if (/[:;]/.test(left[li].c.text)) { tIdx = li; break; }
+            if (p.durationSec && Math.abs(left[li].val * 60 - p.durationSec) < p.durationSec * 0.3) { tIdx = li; break; }
+          }
+          if (tIdx < 0) tIdx = 0;
+          if (p.avgHr == null && left[tIdx + 1] && left[tIdx + 1].val >= 55 && left[tIdx + 1].val <= 215) {
+            p.avgHr = Math.round(left[tIdx + 1].val);
+          }
+          if (p.cadence == null && left[tIdx + 2] && left[tIdx + 2].val >= 110 && left[tIdx + 2].val <= 225) {
+            p.cadence = Math.round(left[tIdx + 2].val);
+          }
+          var pIdx = -1;
+          for (var ri = 0; ri < right.length; ri++) {
+            if (/'/.test(right[ri].c.text)) { pIdx = ri; break; }
+          }
+          if (pIdx < 0) pIdx = 0;
+          if (p.kcal == null) {
+            for (var rj = pIdx; rj < right.length; rj++) {
+              var rt = right[rj].c.text;
+              if (/[:;]/.test(rt) || /['"\u2032\u2033]/.test(rt)) continue;   // 시간·페이스 칸은 칼로리가 아니다
+              if (right[rj].val >= 30 && right[rj].val <= 5000 &&
+                (p.avgHr == null || Math.round(right[rj].val) !== p.avgHr) &&
+                (p.cadence == null || Math.round(right[rj].val) !== p.cadence)) { p.kcal = Math.round(right[rj].val); break; }
+            }
+          }
         }
       }
     }
 
-    /* 6) 못 읽은 칸 정리 */
+    /* 5) 날짜 */
+    p.date = parseDateTokens(tokens, imgH);
+
+    /* 6) 정확도: 실제로 쓴 값들의 평균 신뢰도 */
+    var confs = [];
+    tokens.forEach(function (c) {
+      if (c.conf > 0 && c.conf < 100 && c.h >= maxH * 0.35) confs.push(c.conf);
+    });
+    confs.sort(function (a, b) { return b - a; });
+    var top = confs.slice(0, 8);
+    var sum = 0;
+    top.forEach(function (v) { sum += v; });
+    p.confidence = top.length ? Math.round(sum / top.length) : Math.round((meta.confidence || 0));
+
+    /* 7) 못 읽은 칸 */
     if (!p.date) p.missing.push("날짜");
     if (!p.distanceKm) p.missing.push("거리");
     if (!p.durationSec) p.missing.push("시간");
     if (!p.avgHr) p.missing.push("심박");
     if (!p.cadence) p.missing.push("케이던스");
-
     return p;
   }
 
-  function mergeOcrResults(a, b) {
-    var out = a;
-    ["date", "distanceKm", "durationSec", "avgPaceSec", "avgHr", "cadence", "kcal"].forEach(function (k) {
-      if ((out[k] == null || out[k] === undefined) && b[k] != null) out[k] = b[k];
+  /* 단일 OCR 결과를 기존 시그니처로 해석하고 싶을 때 쓰는 얇은 래퍼 */
+  function parseHealthCapture(data, imgHeight, meta) {
+    var tokens = tokenize(data, { sx: 1, sy: 1, ox: 0, oy: 0 }, "single");
+    return parseTokens(tokens, {
+      width: (meta && meta.width) || 0,
+      height: imgHeight || (meta && meta.height) || 1,
+      inverted: !!(meta && meta.inverted),
+      text: data.text,
+      confidence: data.confidence
     });
-    if (b.confidence > out.confidence) out.confidence = b.confidence;
-    out.missing = [];
-    if (!out.date) out.missing.push("날짜");
-    if (!out.distanceKm) out.missing.push("거리");
-    if (!out.durationSec) out.missing.push("시간");
-    if (!out.avgHr) out.missing.push("심박");
-    if (!out.cadence) out.missing.push("케이던스");
-    if (!out.text && b.text) out.text = b.text;
-    return out;
-  }
-
-  function ocrNeedsSecondPass(p) {
-    return !p.distanceKm || !p.durationSec || !p.avgHr || !p.cadence;
   }
 
   function ocrResultCard(a) {
@@ -1975,7 +2142,7 @@
     return html;
   }
 
-  /* --- 무료 OCR 실행 --- */
+  /* --- 무료 OCR 실행: ①전체 → ②상세 카드 → (필요하면) ③상단 배너 --- */
   async function runFreeOcr() {
     if (!draft.image) return toast("먼저 삼성헬스 캡처를 선택해 주세요.");
     var seq = ++ocrSeq;
@@ -1997,45 +2164,52 @@
       if (seq !== ocrSeq) return;
       var worker = await getOcrWorker();
       if (seq !== ocrSeq) return;
-      await worker.setParameters({ tessedit_pageseg_mode: "6", preserve_interword_spaces: "1", user_defined_dpi: "300" });
-      var res = await worker.recognize(prep.gray, {}, { text: true, blocks: true });
+
+      var tokens = [];
+      var mainText = "";
+      var baseConf = 0;
+      function tokenizePass(data, geo, pass) {
+        tokens = tokens.concat(tokenize(data, geo, pass));
+        if (typeof data.confidence === "number" && data.confidence > baseConf) baseConf = data.confidence;
+      }
+      function parseNow() {
+        return parseTokens(tokens, {
+          width: prep.width, height: prep.height, inverted: prep.inverted,
+          text: mainText, confidence: baseConf
+        });
+      }
+
+      await worker.setParameters({
+        tessedit_pageseg_mode: "6", preserve_interword_spaces: "1",
+        user_defined_dpi: "300", tessedit_char_whitelist: ""
+      });
+      var res1 = await worker.recognize(prep.full.url, {}, { text: true, blocks: true });
       if (seq !== ocrSeq) return;
-      var parsed = parseHealthCapture(res.data, prep.height);
-      if (ocrNeedsSecondPass(parsed)) {
-        draft.status = "흑백으로 한 번 더 확인하는 중…";
+      mainText = String(res1.data.text || "");
+      tokenizePass(res1.data, prep.full, "full");
+
+      draft.status = "상세 카드 숫자를 한 번 더 읽는 중…";
+      render();
+      var res2 = await worker.recognize(prep.card.url, {}, { text: true, blocks: true });
+      if (seq !== ocrSeq) return;
+      tokenizePass(res2.data, prep.card, "card");
+
+      var parsed = parseNow();
+
+      // 거리나 날짜가 비었을 때만 상단(지도 배너) 영역을 숫자 전용으로 한 번 더 읽는다
+      if (!parsed.distanceKm || !parsed.date) {
+        draft.status = "거리와 날짜를 한 번 더 확인하는 중…";
         render();
-        await worker.setParameters({ tessedit_pageseg_mode: "11" });
-        var res2 = await worker.recognize(prep.binary, {}, { text: true, blocks: true });
+        await worker.setParameters({ tessedit_pageseg_mode: "6", tessedit_char_whitelist: "0123456789.:'\"-()/" });
+        var res3 = await worker.recognize(prep.top.url, {}, { text: true, blocks: true });
         if (seq !== ocrSeq) return;
-        parsed = mergeOcrResults(parsed, parseHealthCapture(res2.data, prep.height));
-      }
-      if (prep.top) {
-        // 상단(날짜·큰 거리) 영역은 숫자만 허용해 한 번 더 읽는다
-        draft.status = "날짜와 거리를 한 번 더 확인하는 중…";
-        render();
-        await worker.setParameters({ tessedit_pageseg_mode: "6", tessedit_char_whitelist: "0123456789.:()-/" });
-        var res3 = await worker.recognize(prep.top, {}, { text: true });
         await worker.setParameters({ tessedit_char_whitelist: "" });
-        if (seq !== ocrSeq) return;
-        var wlText = String(res3.data.text || "");
-        if (!parsed.date) {
-          var dOnly = parseDateText(wlText);
-          if (dOnly) {
-            parsed.date = dOnly;
-            parsed.missing = parsed.missing.filter(function (m) { return m !== "날짜"; });
-          }
-        }
-        // 상단의 큰 거리 숫자를 숫자 전용으로 한 번 더 읽어 보정
-        var wlDist = wlText.match(/(\d{1,3}[.,]\d{1,2})/);
-        if (wlDist) {
-          var wv = parseFloat(wlDist[1].replace(",", "."));
-          if (wv > 0.2 && wv <= 200 && (!parsed.distanceKm || Math.abs(wv - parsed.distanceKm) <= 0.15)) {
-            parsed.distanceKm = Math.round(wv * 100) / 100;
-            parsed.missing = parsed.missing.filter(function (m) { return m !== "거리"; });
-          }
-        }
+        tokenizePass(res3.data, prep.top, "top");
+        parsed = parseNow();
       }
+
       ocrProgressCb = null;
+      if (typeof window !== "undefined") window.__paceOcrLast = { parsed: parsed, tokens: tokens };
       finishOcr(parsed, prep);
     } catch (err) {
       if (seq !== ocrSeq) return;
@@ -2046,6 +2220,16 @@
       draft.error = msg + " — 폼에 숫자를 직접 넣어도 페이스는 자동 계산돼요.";
       render();
     }
+  }
+
+  /* ?ocrdebug=1 로 열었을 때만: 브라우저 콘솔에서 OCR을 직접 돌려 결과를 볼 수 있게 한다 */
+  if (typeof window !== "undefined" && /[?&]ocrdebug=1/.test((window.location && window.location.search) || "")) {
+    window.__paceOcrDebug = async function (dataUrl) {
+      draft.image = dataUrl;
+      draft.imageName = "debug";
+      await runFreeOcr();
+      return { parsed: draft.analysis, tokens: (window.__paceOcrLast || {}).tokens || [], error: draft.error };
+    };
   }
 
   /* 코치 문장이 비었을 때(진단 미해당) 쓸 기본 피드백 */
